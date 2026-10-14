@@ -57,14 +57,14 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.5 production forecast with stock-status-aware allocated material and failed-VI replacement planning."
+    DESCRIPTION = "V2.6 production forecast with failed-VI PCB replacement fallback and corrected assembly timing."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
 
     SETTINGS = {
         "WORK_HOURS_DAY": {"name": _("Working hours per business day"), "default": 8, "validator": int},
-        "PCBA_DAYS": {"name": _("Assembly lead time after inspected material is ready (business days)"), "default": 10, "validator": int},
+        "PCBA_ASSEMBLY_DAYS": {"name": _("PCBA assembly lead time after inspected material is ready (business days)"), "default": 10, "validator": int},
         "BARE_VI_MIN": {"name": _("-BARE incoming VI minutes per stock item"), "default": 60, "validator": int},
         "MECH_VI_MIN": {"name": _("-MECH incoming VI minutes per stock item requiring VI"), "default": 12, "validator": int},
         "BOARD_VI_MIN": {"name": _("Assembled-board VI minutes per board"), "default": 90, "validator": int},
@@ -430,16 +430,37 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             target=line_target or po_target
             rows.append({"effective":target,"po_target":po_target,"line_target":line_target,"qty":outstanding,"ref":str(getattr(order,"reference","") or "")})
         rows.sort(key=lambda x:(x["effective"] is None,x["effective"] or date.max))
+        # Only today/future ETA rows are credible forecast supply. Past-due open PO
+        # dates remain visible to the user but cannot create a historical material-
+        # ready date or beat a replacement-fabrication forecast.
+        credible = [x for x in rows if x["effective"] and x["effective"] >= date.today()]
+        credible.sort(key=lambda x:x["effective"])
         remaining=max(D(0),D(need)); full=None; refs=[]
         for row in rows:
             if row["ref"] and row["ref"] not in refs:
                 refs.append(row["ref"])
+        for row in credible:
             remaining-=row["qty"]
             if remaining <= 0:
                 full=row["effective"]
                 break
-        return {"open":sum((x["qty"] for x in rows),D(0)),"earliest":next((x["effective"] for x in rows if x["effective"]),None),"full":full,"refs":refs,
-                "lines":[{"po":x["ref"],"qty":float(x["qty"]),"po_target_date":iso(x["po_target"]),"line_target_date":iso(x["line_target"]),"effective_date":iso(x["effective"])} for x in rows]}
+        return {"open":sum((x["qty"] for x in rows),D(0)),"earliest":next((x["effective"] for x in credible),None),"full":full,"refs":refs,
+                "lines":[{"po":x["ref"],"qty":float(x["qty"]),"po_target_date":iso(x["po_target"]),"line_target_date":iso(x["line_target"]),"effective_date":iso(x["effective"]),"stale":bool(x["effective"] and x["effective"] < date.today())} for x in rows]}
+
+    def is_bare_part(self, part):
+        labels = [self.ipn(part).upper(), str(getattr(part, "name", "") or "").upper()]
+        return any(v.endswith("-BARE") for v in labels if v)
+
+    def failed_vi_stock_qty(self, part):
+        """Return live Failed VI quantity for a raw material part, allocated or not."""
+        total = D(0)
+        custom = self.custom_statuses()
+        for item in self.stock(part):
+            label = self.status_label(item, custom)
+            key = self.norm(label)
+            if "failedvi" in key or ("fail" in key and "vi" in key):
+                total += D(getattr(item, "quantity", 0))
+        return total
 
     def inspection_hours(self, part, quantity):
         # Many Per Vices internal parts (including TR8D-BARE) have a blank IPN,
@@ -453,20 +474,43 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         return D(0), ""
 
     def material_requirement(self, part, need):
-        """Forecast when a purchased/raw material quantity is received + inspected."""
+        """Forecast when purchased/raw material is received + inspected.
+
+        V2.6 gives -BARE shortages a deterministic replacement path. If Failed VI
+        stock exists, or no credible dated PO fully covers the BARE shortage, use
+        the earlier of credible PO coverage and the configured 28-calendar-day
+        fabrication fallback. Past-due PO dates remain informational only.
+        """
         available = self.unallocated_available_qty(part)
         shortage = max(D(0), D(need) - available)
         po = self.po_coverage(part, shortage) if shortage > 0 else {"open":D(0),"earliest":None,"full":None,"refs":[],"lines":[]}
-        received_date = date.today() if shortage <= 0 else po.get("full")
+        failed_vi = self.failed_vi_stock_qty(part) if shortage > 0 else D(0)
+
+        replacement = None
+        if shortage > 0 and self.is_bare_part(part) and (failed_vi > 0 or not po.get("full")):
+            replacement = self.failed_vi_replacement(part, shortage)
+            received_date = day(replacement.get("replacement_date"))
+        else:
+            received_date = date.today() if shortage <= 0 else po.get("full")
+
         inspection_qty = shortage if shortage > 0 else D(0)
-        # Existing stock is already assumed inspected; only incoming shortage adds VI.
         hours, inspection = self.inspection_hours(part, inspection_qty)
         ready = self.add_hours(received_date, hours) if received_date else None
-        return {"part_id":getattr(part,"pk",None),"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
+        result = {"part_id":getattr(part,"pk",None),"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
                 "required":float(D(need)),"available":float(available),"shortage":float(shortage),
-                "incoming_qty":float(min(shortage, D(po.get("open",0)))),"received_date":iso(received_date),
+                "incoming_qty":float(shortage if replacement else min(shortage, D(po.get("open",0)))),"received_date":iso(received_date),
                 "inspection_hours":float(hours),"inspection":inspection,"ready_date":iso(ready),
-                "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[])}
+                "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[]),
+                "failed_vi_qty":float(failed_vi)}
+        if replacement:
+            result.update({
+                "constraint":"failed_vi_replacement" if failed_vi > 0 else "bare_fabrication_fallback",
+                "replacement_source":replacement.get("replacement_source"),
+                "replacement_date":replacement.get("replacement_date"),
+                "new_fabrication_date":replacement.get("new_fabrication_date"),
+                "replacement_lead_days":replacement.get("replacement_lead_days"),
+            })
+        return result
 
     def board_bom_material_ready(self, board_part, board_qty, depth=0, trail=None, builds=None):
         """Return material-ready date and only the true leaf-level constraints.
@@ -619,10 +663,10 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled,builds=builds)
             result["material"]=blockers
             if material_ready and not unresolved:
-                assembled=add_business_days(material_ready,self.setting("PCBA_DAYS"))
+                assembled=add_business_days(material_ready,self.setting("PCBA_ASSEMBLY_DAYS"))
                 test_hours=self.remaining_stage_hours(0,remaining_unassembled)
                 finish=self.add_hours(assembled,test_hours)
-                candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW"))
+                candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW"))
             elif unresolved:
                 names=[]
                 for blocker in unresolved:
@@ -698,7 +742,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time."]}
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time.","V2.6: -BARE shortages use a 28-calendar-day fabrication fallback when no credible future PO fully covers the shortage; past-due PO ETAs are informational only; PCBA assembly defaults to 10 business days."]}
 
     def build_api(self, request, build_id, **kwargs):
         try:

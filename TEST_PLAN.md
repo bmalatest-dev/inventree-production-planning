@@ -49,3 +49,10 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 7. Quarantined / damaged / otherwise unavailable allocated material must remain unresolved.
 8. Confirm TR8D-BARE is recognized as `-BARE` from Part Name even though its IPN is blank.
 9. Confirm a parent needing 3 boards forecasts only enough replacement / inspection capacity for 3, even if the child BO is for 13.
+
+## V0.2.6 regression checks
+
+- Set allocated/on-hand `TR8D-BARE` stock to `Failed VI`; with no credible future PO, verify a 28-calendar-day replacement fabrication date is forecast, followed by incoming VI, 10 business days PCBA assembly, and board testing.
+- Verify a future PO that fully covers the BARE shortage and arrives sooner than the 28-day fabrication fallback is selected instead.
+- Verify past-due open PO ETAs remain visible but do not create historical material-ready dates.
+- Verify TR8M/TR8P/TR8B readiness paths show `10 business days assembly`.

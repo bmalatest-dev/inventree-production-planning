@@ -12,3 +12,10 @@
 - Forecast only the quantity needed by the parent requirement when a larger child BO exists.
 - Update Planning Assumptions heading to the actual plugin version.
 - No database migration.
+
+## 0.2.6 - 2026-10-14
+
+- Forecast `-BARE` replacement fabrication at 28 calendar days when Failed VI stock blocks the build and no earlier credible PO coverage exists.
+- Apply the same fabrication fallback to undated `-BARE` shortages so PCB material does not remain permanently unscheduled.
+- Ignore past-due open PO dates as forecast supply dates while retaining them in PO detail as stale information.
+- Reset the PCBA assembly setting under a new key with a 10-business-day default, avoiding legacy saved 5-day values.
