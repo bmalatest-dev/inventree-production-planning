@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.4 production forecast using authoritative BuildLine allocation state for existing child builds."
+    DESCRIPTION = "V2.5 production forecast with stock-status-aware allocated material and failed-VI replacement planning."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -73,6 +73,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         "EEPROM_MIN": {"name": _("EEPROM programming/test minutes per board"), "default": 15, "validator": int},
         "SW_MIN": {"name": _("Software Test minutes per board"), "default": 120, "validator": int},
         "FINAL_ASSEMBLY_MIN": {"name": _("Final assembly minutes per finished unit"), "default": 240, "validator": int},
+        "FAILED_VI_REPLACEMENT_DAYS": {"name": _("Failed VI replacement fabrication lead time (calendar days)"), "default": 28, "validator": int},
     }
 
     STATUS_ALIASES = {
@@ -309,6 +310,69 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     )
         return result
 
+    def allocated_material_state(self, builds, part):
+        """Classify stock allocated to matching child BuildLines by live StockItem status.
+
+        Allocation answers *where the material is committed*; StockItem status answers
+        whether that committed material is actually ready to use. This distinction is
+        critical for Pending / Failed VI material.
+        """
+        result = {"found": False, "ready": D(0), "pending": D(0), "failed_vi": D(0), "blocked": D(0), "items": []}
+        custom = self.custom_statuses()
+        custom_logical = self.custom_logical_statuses()
+        for build in builds or []:
+            try:
+                lines = build.build_lines.filter(bom_item__sub_part=part)
+            except Exception:
+                lines = []
+            for line in lines:
+                try:
+                    allocations = line.allocations.select_related("stock_item")
+                except Exception:
+                    try:
+                        allocations = line.allocations.all()
+                    except Exception:
+                        allocations = []
+                for alloc in allocations:
+                    stock = getattr(alloc, "stock_item", None)
+                    if not stock:
+                        continue
+                    result["found"] = True
+                    qty = D(getattr(alloc, "quantity", 0))
+                    label = self.status_label(stock, custom)
+                    key = self.norm(label)
+                    if "failedvi" in key or ("fail" in key and "vi" in key):
+                        bucket = "failed_vi"
+                    elif "pending" in key:
+                        bucket = "pending"
+                    elif "fail" in key or "rework" in key or "quarantine" in key or "damage" in key:
+                        bucket = "blocked"
+                    elif self.logical_available(stock, custom_logical):
+                        bucket = "ready"
+                    else:
+                        bucket = "blocked"
+                    result[bucket] += qty
+                    result["items"].append({"stock_item_id": getattr(stock, "pk", None), "quantity": float(qty), "status": label, "state": bucket})
+        return result
+
+    def failed_vi_replacement(self, part, need):
+        """Choose the earliest viable replacement path: open PO coverage or new fab."""
+        need = max(D(0), D(need))
+        po = self.po_coverage(part, need)
+        po_date = po.get("full")
+        fab_date = date.today() + timedelta(days=self.setting("FAILED_VI_REPLACEMENT_DAYS"))
+        # An overdue PO target is not a credible future replacement forecast. Keep it
+        # visible in PO details, but compare only today/future dated coverage to new fab.
+        credible_po = po_date if po_date and po_date >= date.today() else None
+        replacement_date = min([d for d in (credible_po, fab_date) if d], default=None)
+        source = "open_po" if credible_po and replacement_date == credible_po else "new_fabrication"
+        hours, inspection = self.inspection_hours(part, need)
+        ready = self.add_hours(replacement_date, hours) if replacement_date else None
+        return {"replacement_source": source, "replacement_date": iso(replacement_date), "new_fabrication_date": iso(fab_date),
+                "replacement_lead_days": self.setting("FAILED_VI_REPLACEMENT_DAYS"), "inspection_hours": float(hours),
+                "inspection": inspection, "ready_date": iso(ready), "open_po_qty": float(po.get("open", 0)),
+                "po_references": po.get("refs", []), "po_lines": po.get("lines", [])}
+
     def globally_allocated_qty(self, part):
         """Return stock quantity already committed to any build order."""
         try:
@@ -378,12 +442,13 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "lines":[{"po":x["ref"],"qty":float(x["qty"]),"po_target_date":iso(x["po_target"]),"line_target_date":iso(x["line_target"]),"effective_date":iso(x["effective"])} for x in rows]}
 
     def inspection_hours(self, part, quantity):
-        ipn = self.ipn(part).upper()
+        # Many Per Vices internal parts (including TR8D-BARE) have a blank IPN,
+        # so inspection classification must consider both IPN and Part Name.
+        labels = [self.ipn(part).upper(), str(getattr(part, "name", "") or "").upper()]
         qty = D(quantity)
-        if ipn.endswith("-BARE"):
+        if any(v.endswith("-BARE") for v in labels if v):
             return qty * D(self.setting("BARE_VI_MIN")) / D(60), "-BARE VI"
-        # Mechanical incoming inspection applies to material in a -MECH BOM.
-        if "-MECH" in ipn:
+        if any("-MECH" in v for v in labels if v):
             return qty * D(self.setting("MECH_VI_MIN")) / D(60), "-MECH VI"
         return D(0), ""
 
@@ -437,13 +502,49 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             # A fully allocated / consumed line has unallocated_quantity() == 0
             # and therefore cannot reappear here as a material blocker.
             line_state = self.child_build_line_state(builds or [], sub) if depth == 0 else {"found": False}
+            allocated_state = self.allocated_material_state(builds or [], sub) if depth == 0 and line_state.get("found") else {"found": False}
+            status_blocker = None
             if line_state.get("found"):
-                remaining = D(line_state.get("unallocated", 0))
+                # Only enough material to satisfy the parent requirement is relevant
+                # to this forecast, even when the child BO itself is larger.
+                parent_need = qty
+                allocated_ready = min(parent_need, D(allocated_state.get("ready", 0)))
+                pending = min(max(D(0), parent_need - allocated_ready), D(allocated_state.get("pending", 0)))
+                failed_vi = min(max(D(0), parent_need - allocated_ready - pending), D(allocated_state.get("failed_vi", 0)))
+                other_blocked = min(max(D(0), parent_need - allocated_ready - pending - failed_vi), D(allocated_state.get("blocked", 0)))
+
+                if pending > 0:
+                    hours, inspection = self.inspection_hours(sub, pending)
+                    ready_date = self.add_hours(date.today(), hours)
+                    status_blocker = {"part_id":sub.pk,"part_url":self.part_url(sub),"ipn":self.ipn(sub),"name":str(getattr(sub,"name","") or ""),"label":self.part_label(sub),
+                                      "required":float(parent_need),"available":float(allocated_ready),"shortage":float(pending),"constraint":"pending_inspection",
+                                      "status_detail":f"{float(pending):g} allocated stock pending incoming inspection","inspection_hours":float(hours),"inspection":inspection,
+                                      "received_date":iso(date.today()),"ready_date":iso(ready_date),"open_po_qty":0,"po_references":[],"po_lines":[]}
+                elif failed_vi > 0:
+                    repl = self.failed_vi_replacement(sub, failed_vi)
+                    status_blocker = {"part_id":sub.pk,"part_url":self.part_url(sub),"ipn":self.ipn(sub),"name":str(getattr(sub,"name","") or ""),"label":self.part_label(sub),
+                                      "required":float(parent_need),"available":float(allocated_ready),"shortage":float(failed_vi),"constraint":"failed_vi",
+                                      "status_detail":f"{float(failed_vi):g} required allocated stock is Failed VI and cannot be used", **repl}
+                elif other_blocked > 0:
+                    status_blocker = {"part_id":sub.pk,"part_url":self.part_url(sub),"ipn":self.ipn(sub),"name":str(getattr(sub,"name","") or ""),"label":self.part_label(sub),
+                                      "required":float(parent_need),"available":float(allocated_ready),"shortage":float(other_blocked),"constraint":"blocked_stock",
+                                      "status_detail":f"{float(other_blocked):g} allocated stock is unavailable / quarantined","ready_date":None,"open_po_qty":0,"po_references":[],"po_lines":[]}
+
+                if status_blocker:
+                    status_blocker["path"] = " > ".join([self.part_label(board_part), self.part_label(sub)])
+                    status_blocker["allocated_status"] = allocated_state
+                    blockers.append(status_blocker)
+                    rd = day(status_blocker.get("ready_date"))
+                    if rd and rd > latest:
+                        latest = rd
+                    continue
+
+                # Native BuildLine state remains authoritative for quantity not yet
+                # allocated. Fully allocated + ready material cannot become a blocker.
+                remaining = min(parent_need, D(line_state.get("unallocated", 0)))
                 if remaining <= 0:
                     continue
             else:
-                # No matching child BuildLine (e.g. recursive BOM planning before a
-                # child BO exists): retain BOM-derived requirement behavior.
                 remaining = qty
 
             available=self.unallocated_available_qty(sub)
@@ -597,7 +698,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers."]}
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time."]}
 
     def build_api(self, request, build_id, **kwargs):
         try:

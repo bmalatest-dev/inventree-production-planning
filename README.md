@@ -30,3 +30,6 @@ These values are plugin settings and can be tuned later.
 ## V2.4 allocation behavior
 
 When an existing child Build Order is available, Production Planning now uses InvenTree's native BuildLine allocation state. `BuildLine.unallocated_quantity()` is authoritative. A fully allocated or consumed BuildLine is excluded from blocker analysis; only its remaining unallocated quantity can be tested against free stock and PO coverage.
+
+## V0.2.5 stock-status planning
+Allocation and readiness are separate concepts. For an existing child BO, native BuildLine allocation state remains authoritative for committed quantity, but the allocated StockItem status determines whether that material is actually usable. Pending material schedules incoming inspection. Failed VI material cannot satisfy the build and is replaced using the earlier of credible open-PO coverage or the configured replacement fabrication lead time (default 28 calendar days). Replacement material must still pass incoming inspection before assembly begins.

@@ -38,3 +38,14 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 4. Confirm `TR8D Assembly` (and any IPN/name ending in ` Assembly`) remains excluded.
 5. Confirm genuine uncovered material still shows free-stock and PO coverage.
 6. Confirm part and Build Order links remain clickable.
+
+## V0.2.5 status-aware tests
+1. Set allocated `TR8D-BARE` StockItems to OK: they should be treated as assembly-ready material.
+2. Set them to Pending: the plan should show TR8D-BARE as the current constraint and add configured `-BARE` incoming VI time before assembly.
+3. Set them to Failed VI: the plan should not call them inspected or ready. It should show Failed VI and compare open PO coverage with the configured replacement-fabrication date.
+4. With a future PO that covers the required replacement quantity sooner than 28 days, the PO should win.
+5. Without a credible future PO, new fabrication should win at today + 28 calendar days, followed by incoming VI.
+6. A past-due PO target may remain visible in details but must not beat the new-fabrication forecast.
+7. Quarantined / damaged / otherwise unavailable allocated material must remain unresolved.
+8. Confirm TR8D-BARE is recognized as `-BARE` from Part Name even though its IPN is blank.
+9. Confirm a parent needing 3 boards forecasts only enough replacement / inspection capacity for 3, even if the child BO is for 13.
