@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.1 recursive BO planning with leaf blockers and quantity-selectable optional BOM items."
+    DESCRIPTION = "V2.2 operational production forecast with named blockers, PO ETAs, WIP and readiness paths."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -131,6 +131,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     @staticmethod
     def ipn(part):
         return str(getattr(part, "IPN", "") or "")
+
+    def part_label(self, part):
+        """Never lose the identity of a blocker while recursing through BOMs."""
+        ipn = self.ipn(part).strip()
+        name = str(getattr(part, "name", "") or "").strip()
+        return ipn or name or f"Part {getattr(part, 'pk', '?')}"
 
     @staticmethod
     def build_ref(build):
@@ -308,8 +314,10 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # Existing stock is already assumed inspected; only incoming shortage adds VI.
         hours, inspection = self.inspection_hours(part, inspection_qty)
         ready = self.add_hours(received_date, hours) if received_date else None
-        return {"ipn":self.ipn(part),"required":float(D(need)),"available":float(available),"shortage":float(shortage),
-                "received_date":iso(received_date),"inspection_hours":float(hours),"inspection":inspection,"ready_date":iso(ready),
+        return {"part_id":getattr(part,"pk",None),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
+                "required":float(D(need)),"available":float(available),"shortage":float(shortage),
+                "incoming_qty":float(min(shortage, D(po.get("open",0)))),"received_date":iso(received_date),
+                "inspection_hours":float(hours),"inspection":inspection,"ready_date":iso(ready),
                 "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[])}
 
     def board_bom_material_ready(self, board_part, board_qty, depth=0, trail=None):
@@ -358,9 +366,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             m=self.material_requirement(sub,qty)
             if m["shortage"] <= 0:
                 continue
-            m["path"] = " > ".join(
-                [self.ipn(board_part) or str(board_part.pk), self.ipn(sub) or str(sub.pk)]
-            )
+            m["path"] = " > ".join([self.part_label(board_part), self.part_label(sub)])
             if m.get("ready_date"):
                 blockers.append(m)
                 rd=day(m.get("ready_date"))
@@ -413,7 +419,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             elif unresolved:
                 names=[]
                 for blocker in unresolved:
-                    name=blocker.get("ipn") or "Unknown material"
+                    name=blocker.get("label") or blocker.get("ipn") or blocker.get("name") or f"Part {blocker.get('part_id','?')}"
                     if name not in names:
                         names.append(name)
                 result["basis"]="Material blocker(s) without dated full coverage: " + ", ".join(names)
@@ -468,15 +474,22 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             if row["shortage"]<=0: continue
             fd=day((row.get("forecast") or {}).get("forecast_ready"))
             if fd:
-                if fd>=material: material=fd; critical=row["ipn"] or row["name"]
-            else: unresolved.append(row["ipn"] or row["name"])
+                if fd>=material:
+                    material=fd; critical=row["ipn"] or row["name"]
+            else:
+                unresolved.append(row["ipn"] or row["name"] or f"Part {row['part_id']}")
         final_hours=D(self.setting("FINAL_ASSEMBLY_MIN"))*D(getattr(build,"quantity",0))/D(60)
         ready=None if unresolved else self.add_hours(material,final_hours)
         target=day(getattr(build,"target_date",None))
+        if unresolved:
+            critical=None
+            critical_display=f"Unresolved — {len(unresolved)} requirement{'s' if len(unresolved)!=1 else ''} have unscheduled material blockers"
+        else:
+            critical_display=critical or "All requirements ready"
         status="BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
         return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(D(getattr(build,"quantity",0))),"target_date":iso(target)},
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
-                "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
+                "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
                 "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date."]}
 
