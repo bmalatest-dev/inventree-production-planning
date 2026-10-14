@@ -1,0 +1,32 @@
+const React = globalThis.React;
+const h = (...args) => React.createElement(...args);
+
+function contextOf(p){return p?.context||p?.featureContext||p?.feature?.context||p||{};}
+function qty(v){const n=Number(v||0);return Number.isInteger(n)?String(n):n.toFixed(2).replace(/0+$/,'').replace(/\.$/,'');}
+function badge(t){const u=String(t||'').toUpperCase();let bg='#e9ecef',fg='#343a40';if(u.includes('ON TRACK')||u==='READY'){bg='#d3f9d8';fg='#2b8a3e';}else if(u.includes('LATE')||u.includes('BLOCKED')){bg='#ffe3e3';fg='#c92a2a';}else if(u.includes('FORECAST')){bg='#fff3bf';fg='#8f6b00';}return h('span',{style:{background:bg,color:fg,padding:'3px 8px',borderRadius:'12px',fontWeight:600}},t);}
+function td(v,s={}){return h('td',{style:{padding:'7px 8px',borderBottom:'1px solid #eee',verticalAlign:'top',...s}},v);}
+
+function Panel(props){
+ const c=contextOf(props),[data,setData]=React.useState(null),[error,setError]=React.useState('');
+ React.useEffect(()=>{let active=true;fetch(c.data_url,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(async r=>{const p=await r.json();if(!r.ok)throw new Error(p.error||`HTTP ${r.status}`);return p;}).then(p=>active&&setData(p)).catch(e=>active&&setError(String(e)));return()=>{active=false};},[c.data_url]);
+ if(error)return h('div',{style:{padding:'12px',border:'1px solid #f03e3e',borderRadius:'4px',color:'#c92a2a'}},h('strong',null,'Production Planning failed to load: '),error);
+ if(!data)return h('div',{style:{padding:'12px',opacity:.75}},'Calculating production plan…');
+ const b=data.build,s=data.summary,rows=data.requirements||[];
+ return h('div',{style:{padding:'4px 8px 24px'}},
+  h('div',{style:{display:'flex',gap:'22px',flexWrap:'wrap',padding:'12px',border:'1px solid #ddd',borderRadius:'6px'}},
+   [['Build',`${b.reference} — ${b.ipn||b.name}`],['Quantity',qty(b.quantity)],['Material Ready',s.material_ready||'Unresolved'],['Forecast Product Ready',s.forecast_ready||'Unresolved'],['Critical Requirement',s.critical_requirement||'—']].map(([a,v])=>h('div',{key:a},h('div',{style:{fontSize:'12px',opacity:.7}},a),h('strong',null,v))),
+   h('div',null,h('div',{style:{fontSize:'12px',opacity:.7}},'Status'),badge(s.status))
+  ),
+  s.unresolved?.length?h('div',{style:{marginTop:'10px',padding:'9px',background:'#fff3bf',borderRadius:'4px'}},h('strong',null,'Unscheduled blockers: '),s.unresolved.join(', ')):null,
+  h('h3',{style:{marginTop:'18px'}},'Top-Level Requirements'),
+  h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+   h('thead',null,h('tr',null,['Requirement','Need','Available','Short','Child BOs','Forecast Satisfied','Status'].map(x=>h('th',{key:x,style:{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #ddd'}},x)))),
+   h('tbody',null,rows.map((r,i)=>{const f=r.forecast||{},ready=r.shortage<=0?'Ready':(f.forecast_ready||'Unscheduled'),st=r.shortage<=0?'READY':(f.forecast_ready?'FORECAST':'BLOCKED'),children=(r.child_builds||[]).map(x=>`${x.reference} (${qty(x.quantity)})`).join(', ')||'—';return h(React.Fragment,{key:r.part_id||i},
+    h('tr',null,td(h('div',null,h('strong',null,r.ipn||r.name||`Part ${r.part_id}`),r.name&&r.ipn?h('div',{style:{fontSize:'12px',opacity:.7}},r.name):null)),td(qty(r.required)),td(qty(r.available)),td(qty(r.shortage),{fontWeight:r.shortage>0?600:400}),td(children),td(ready),td(badge(st))),
+    r.shortage>0&&f.basis?h('tr',null,h('td',{colSpan:7,style:{padding:'5px 8px 10px 24px',fontSize:'12px',background:'#fafafa'}},h('div',null,h('strong',null,'Forecast basis: '),f.basis),(f.bare||[]).map((x,j)=>h('div',{key:j,style:{marginTop:'3px'}},`${x.child_build}: ${x.ipn} — available ${qty(x.available)}, need ${qty(x.needed)}, open PO ${qty(x.open_po_qty)}${x.full_coverage_po_date?`, full coverage ${x.full_coverage_po_date}`:x.earliest_po_date?`, earliest PO ${x.earliest_po_date}`:''}${x.po_references?.length?` (${x.po_references.join(', ')})`:''}`)))):null
+   );}))
+  ),
+  h('details',{style:{marginTop:'18px'}},h('summary',{style:{cursor:'pointer',fontWeight:600}},'V1 Planning Assumptions'),h('ul',null,(data.notes||[]).map((n,i)=>h('li',{key:i},n))))
+ );
+}
+export function renderPanel(props){if(!React?.createElement)return null;return h(Panel,props);}
