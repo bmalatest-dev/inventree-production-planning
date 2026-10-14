@@ -1,24 +1,27 @@
-# InvenTree Production Planning
+# InvenTree Production Planning v0.2.3
 
-Production Planning V2.1 forecasts Build Order material readiness and completion from finished stock, BO-created WIP outputs, BOM material availability, open PO dates, incoming inspection, assembly lead time, and remaining board test stages.
+Production Planning forecasts when active Build Orders can be completed from finished stock, WIP test stages, child Build Orders, material availability, PO dates, incoming inspection, assembly lead time and final test.
 
-## V2.1 planning rules
+## V2.3 material-planning rules
 
-- A BO-created incomplete output never counts as available merely because the StockItem exists.
-- A board becomes ready for a parent BO at **Pass SW**.
-- WIP at Pass VI / Pass Press Fit / Pass BU / EEPROM Pass is forecast from its remaining operations.
-- An unstaged incomplete output causes the planner to inspect the next BOM layer for blockers rather than assuming assembly is complete.
-- Incoming shortages must be received and complete required incoming VI before the 10-business-day assembly lead time starts.
-- `-BARE`: 1.0 hour incoming VI per incoming stock item.
-- `-MECH`: 0.2 hour incoming VI per applicable incoming stock item.
-- Assembled board: VI 1.5h, Press Fit 0.5h, BU 1h, EEPROM 0.25h, SW 2h per board.
-- Final assembly: 4h per finished top-level unit.
-- 8 working hours = one business day; weekends are skipped.
-- PO expected date = line target date when set, otherwise PO header target date.
-- Optional top-level BOM items can be selected in the panel and are remembered per BO in that browser.
+Existing child Build Orders are treated as the authoritative production work already in progress. Material already allocated or consumed against those child BOs is committed coverage and is not reported again as a shortage. Only the remaining uncovered requirement is checked against unallocated usable stock and then against open purchase orders.
 
-All defaults are plugin settings and can be adjusted later as measured production data improves.
+BOM entries whose IPN or name ends with ` Assembly` are costing-only entries. They remain in the InvenTree BOM so product cost remains complete, but Production Planning ignores them as physical material requirements because assembly time is forecast separately.
 
+Displayed part references are navigable links to the corresponding InvenTree Part page.
 
-## V2.1 reporting
-Optional BOM lines are quantity-selectable per Build Order. Enter 0 to exclude an option or the required total quantity up to the BOM maximum. Recursive BOM analysis is performed internally, but the Production Plan displays only leaf-level material blockers; satisfied components are not listed.
+## Default planning assumptions
+
+- 8 working hours per business day
+- 10 business days assembly after all required material is received and inspected
+- `-BARE` incoming VI: 1 hour per stock item
+- `-MECH` incoming VI: 0.2 hours per stock item when VI is required
+- assembled-board VI: 1.5 hours per board
+- Press Fit: 0.5 hours per board
+- Bring-Up: 1 hour per board
+- EEPROM programming/test: 0.25 hours per board
+- Software Test: 2 hours per board
+- Pass SW means the board is ready
+- final assembly: 4 hours per finished top-level unit
+
+These values are plugin settings and can be tuned later.

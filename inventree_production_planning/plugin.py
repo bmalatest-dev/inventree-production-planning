@@ -7,7 +7,7 @@ from django.utils.translation import gettext_lazy as _
 
 from plugin import InvenTreePlugin
 from plugin.mixins import SettingsMixin, UrlsMixin, UserInterfaceMixin
-from build.models import Build
+from build.models import Build, BuildItem
 from order.models import PurchaseOrderLineItem
 from part.models import BomItem
 from stock.models import StockItem
@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.2 operational production forecast with named blockers, PO ETAs, WIP and readiness paths."
+    DESCRIPTION = "V2.3 production forecast with allocation-aware blockers, costing-line exclusions and navigable parts."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -241,6 +241,60 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def available_qty(self, part):
         return self.stock_state(part)["finished"]
 
+    @staticmethod
+    def is_assembly_cost_line(part):
+        """Return True for costing-only BOM entries such as 'TR8D Assembly'.
+
+        These entries remain in the engineering BOM for total product costing but
+        Production Planning accounts for assembly time separately. They must never
+        become material blockers or PO requirements.
+        """
+        if not part:
+            return False
+        values = [str(getattr(part, "IPN", "") or "").strip(), str(getattr(part, "name", "") or "").strip()]
+        return any(v.lower().endswith(" assembly") for v in values if v)
+
+    @staticmethod
+    def part_url(part):
+        return f"/web/part/{getattr(part, 'pk', '')}/" if part else None
+
+    @staticmethod
+    def build_url(build):
+        return f"/web/manufacturing/build-order/{getattr(build, 'pk', '')}/" if build else None
+
+    def committed_build_qty(self, builds, part):
+        """Quantity already committed to the supplied BO(s), allocated or consumed.
+
+        BuildItem is InvenTree's stock-to-build allocation record. Counting these
+        records means a component already dealt with for an existing child BO is not
+        incorrectly rediscovered as a new material shortage.
+        """
+        if not builds:
+            return D(0)
+        try:
+            qs = BuildItem.objects.filter(build__in=builds, stock_item__part=part)
+            total = D(0)
+            for obj in qs.only("quantity"):
+                total += D(getattr(obj, "quantity", 0))
+            return total
+        except Exception:
+            return D(0)
+
+    def globally_allocated_qty(self, part):
+        """Return stock quantity already committed to any build order."""
+        try:
+            qs = BuildItem.objects.filter(stock_item__part=part)
+            total = D(0)
+            for obj in qs.only("quantity"):
+                total += D(getattr(obj, "quantity", 0))
+            return total
+        except Exception:
+            return D(0)
+
+    def unallocated_available_qty(self, part):
+        """Usable stock which is not already committed to another build."""
+        return max(D(0), self.available_qty(part) - self.globally_allocated_qty(part))
+
     def bom(self, part):
         try:
             return list(BomItem.objects.filter(part=part).select_related("sub_part").order_by("id"))
@@ -306,7 +360,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
 
     def material_requirement(self, part, need):
         """Forecast when a purchased/raw material quantity is received + inspected."""
-        available = self.available_qty(part)
+        available = self.unallocated_available_qty(part)
         shortage = max(D(0), D(need) - available)
         po = self.po_coverage(part, shortage) if shortage > 0 else {"open":D(0),"earliest":None,"full":None,"refs":[],"lines":[]}
         received_date = date.today() if shortage <= 0 else po.get("full")
@@ -314,13 +368,13 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # Existing stock is already assumed inspected; only incoming shortage adds VI.
         hours, inspection = self.inspection_hours(part, inspection_qty)
         ready = self.add_hours(received_date, hours) if received_date else None
-        return {"part_id":getattr(part,"pk",None),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
+        return {"part_id":getattr(part,"pk",None),"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
                 "required":float(D(need)),"available":float(available),"shortage":float(shortage),
                 "incoming_qty":float(min(shortage, D(po.get("open",0)))),"received_date":iso(received_date),
                 "inspection_hours":float(hours),"inspection":inspection,"ready_date":iso(ready),
                 "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[])}
 
-    def board_bom_material_ready(self, board_part, board_qty, depth=0, trail=None):
+    def board_bom_material_ready(self, board_part, board_qty, depth=0, trail=None, builds=None):
         """Return material-ready date and only the true leaf-level constraints.
 
         Satisfied BOM components are intentionally not returned to the UI. If a
@@ -344,9 +398,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             sub=self.subpart(item)
             if not sub:
                 continue
+            # '* Assembly' BOM lines are costing/accounting entries. The planner
+            # already adds the configured assembly operation separately.
+            if self.is_assembly_cost_line(sub):
+                continue
             qty=D(getattr(item,"quantity",0))*D(board_qty)
-            available=self.available_qty(sub)
-            shortage=max(D(0),qty-available)
+            committed=self.committed_build_qty(builds or [], sub) if depth == 0 else D(0)
+            remaining=max(D(0),qty-committed)
+            available=self.unallocated_available_qty(sub)
+            shortage=max(D(0),remaining-available)
             if shortage <= 0:
                 continue
 
@@ -355,7 +415,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             child_bom=self.bom(sub)
             if child_bom:
                 child_ready,child_blockers,child_unresolved=self.board_bom_material_ready(
-                    sub, shortage, depth+1, trail
+                    sub, shortage, depth+1, trail, builds=None
                 )
                 blockers.extend(child_blockers)
                 blockers.extend(child_unresolved)
@@ -363,7 +423,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     latest=child_ready
                 continue
 
-            m=self.material_requirement(sub,qty)
+            m=self.material_requirement(sub,remaining)
+            m["build_committed"] = float(committed)
             if m["shortage"] <= 0:
                 continue
             m["path"] = " > ".join([self.part_label(board_part), self.part_label(sub)])
@@ -409,7 +470,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         staged=sum((ex[s] for s in (1,2,3,4)),D(0))
         remaining_unassembled=max(D(0),need-staged)
         if remaining_unassembled>0:
-            material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled)
+            material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled,builds=builds)
             result["material"]=blockers
             if material_ready and not unresolved:
                 assembled=add_business_days(material_ready,self.setting("PCBA_DAYS"))
@@ -446,9 +507,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         builds=self.child_builds(part,build.pk); state=self.stock_state(part)
         board_like=bool(builds or any(state["exact"][s]>0 for s in range(0,6))) and bool(self.bom(part))
         forecast=self.board_forecast(part,shortage,builds) if board_like and shortage>0 else None
-        return {"bom_item_id":item.pk,"optional":bool(getattr(item,"optional",False)),"part_id":part.pk,"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
+        return {"bom_item_id":item.pk,"optional":bool(getattr(item,"optional",False)),"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
                 "required":float(required),"available":float(available),"shortage":float(shortage),"board_like":board_like,
-                "child_builds":[{"id":b.pk,"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],"forecast":forecast}
+                "child_builds":[{"id":b.pk,"url":self.build_url(b),"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],"forecast":forecast}
 
     def plan(self, build_id, optional_quantities=None):
         build=Build.objects.select_related("part").get(pk=build_id); part=getattr(build,"part",None)
@@ -462,7 +523,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 per_unit=D(getattr(item,"quantity",0))
                 max_total=per_unit*build_qty
                 selected=min(max_total,optional_quantities.get(item.pk,D(0)))
-                optional_rows.append({"bom_item_id":item.pk,"ipn":self.ipn(sub),"name":str(getattr(sub,"name","") or ""),"quantity_per_build":float(per_unit),"max_total":float(max_total),"selected_quantity":float(selected)})
+                optional_rows.append({"bom_item_id":item.pk,"part_id":getattr(sub,"pk",None),"part_url":self.part_url(sub),"ipn":self.ipn(sub),"name":str(getattr(sub,"name","") or ""),"quantity_per_build":float(per_unit),"max_total":float(max_total),"selected_quantity":float(selected)})
                 if selected <= 0:
                     continue
                 row=self.requirement(build,item,optional_total_qty=selected)
@@ -491,7 +552,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date."]}
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.3: existing child-BO allocations / consumed BuildItems count as committed coverage; only the uncovered remainder is tested against unallocated stock."]}
 
     def build_api(self, request, build_id, **kwargs):
         try:
