@@ -1,33 +1,20 @@
-# InvenTree Production Planning v0.1.0
+# InvenTree Production Planning
 
-A deliberately lightweight V1 production-planning plugin for Per Vices.
+Production Planning V2 forecasts Build Order material readiness and completion from finished stock, BO-created WIP outputs, BOM material availability, open PO dates, incoming inspection, assembly lead time, and remaining board test stages.
 
-For a top-level Build Order it calculates direct BOM requirements as BOM quantity × BO quantity, compares them with usable stock, finds active child BOs for shortages, reads current board stock statuses, finds `-BARE` requirements and their open PO dates, and forecasts when the finished product can be ready.
+## V2 planning rules
 
-## V1 flow
+- A BO-created incomplete output never counts as available merely because the StockItem exists.
+- A board becomes ready for a parent BO at **Pass SW**.
+- WIP at Pass VI / Pass Press Fit / Pass BU / EEPROM Pass is forecast from its remaining operations.
+- An unstaged incomplete output causes the planner to inspect the next BOM layer for blockers rather than assuming assembly is complete.
+- Incoming shortages must be received and complete required incoming VI before the 10-business-day assembly lead time starts.
+- `-BARE`: 1.0 hour incoming VI per incoming stock item.
+- `-MECH`: 0.2 hour incoming VI per applicable incoming stock item.
+- Assembled board: VI 1.5h, Press Fit 0.5h, BU 1h, EEPROM 0.25h, SW 2h per board.
+- Final assembly: 4h per finished top-level unit.
+- 8 working hours = one business day; weekends are skipped.
+- PO expected date = line target date when set, otherwise PO header target date.
+- Optional top-level BOM items can be selected in the panel and are remembered per BO in that browser.
 
-`-BARE PO/stock -> PCBA -> VI -> BU -> SW -> conformal coating -> board ready -> final assembly -> final test`
-
-Pass Press Fit and EEPROM Pass are recognized as intermediate progress states. Later pass states count cumulatively toward earlier stages.
-
-## Settings
-
-PCBA, VI, BU, SW, conformal coating, final assembly and final test are configurable in business days.
-
-## Intentional V1 limitations
-
-- Monday-Friday only; statutory holidays are not modeled yet.
-- No technician / assembly-house capacity model yet.
-- Batch-oriented forecast rather than unit-by-unit resource scheduling.
-- Top-level requirements are shown; shortages are followed into child BOs and `-BARE` PO timing.
-- Optional BOM items are ignored.
-- Panel calculation is asynchronous so it does not block InvenTree's shared plugin-panel load.
-
-## PO target-date convention
-
-- PO Target Date is the current baseline.
-- Blank line Target Date inherits the PO Target Date.
-- Populated line Target Date is the current line-specific supplier ETA.
-- The line Target Date can be revised repeatedly as the supplier forecast changes.
-- Production Planning always uses the current effective expected receipt date.
-- Supplier lateness is measured in calendar days; manufacturing durations are business days.
+All defaults are plugin settings and can be adjusted later as measured production data improves.

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inventree-production-planning"
-version = "0.1.0"
-description = "V1 production planning forecast for InvenTree Build Orders."
+version = "0.2.0"
+description = "V2 recursive production planning forecast for InvenTree Build Orders."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

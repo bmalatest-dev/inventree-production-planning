@@ -7,7 +7,7 @@ from django.utils.translation import gettext_lazy as _
 
 from plugin import InvenTreePlugin
 from plugin.mixins import SettingsMixin, UrlsMixin, UserInterfaceMixin
-from build.models import Build, BuildLine
+from build.models import Build
 from order.models import PurchaseOrderLineItem
 from part.models import BomItem
 from stock.models import StockItem
@@ -36,7 +36,7 @@ def day(value):
         return None
 
 
-def add_days(start, count):
+def add_business_days(start, count):
     d = day(start)
     if not d:
         return None
@@ -57,19 +57,22 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V1 BO material, board-stage and completion forecast."
+    DESCRIPTION = "V2 recursive BO material, inspection, WIP-stage and completion forecast."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
 
     SETTINGS = {
-        "PCBA_DAYS": {"name": _("PCBA business days"), "default": 5, "validator": int},
-        "VI_DAYS": {"name": _("Visual Inspection business days"), "default": 1, "validator": int},
-        "BU_DAYS": {"name": _("Bring-Up business days"), "default": 3, "validator": int},
-        "SW_DAYS": {"name": _("Software Test business days"), "default": 2, "validator": int},
-        "COATING_DAYS": {"name": _("Conformal Coating business days"), "default": 2, "validator": int},
-        "FINAL_ASSEMBLY_DAYS": {"name": _("Final Assembly business days"), "default": 3, "validator": int},
-        "FINAL_TEST_DAYS": {"name": _("Final Test business days"), "default": 2, "validator": int},
+        "WORK_HOURS_DAY": {"name": _("Working hours per business day"), "default": 8, "validator": int},
+        "PCBA_DAYS": {"name": _("Assembly lead time after inspected material is ready (business days)"), "default": 10, "validator": int},
+        "BARE_VI_MIN": {"name": _("-BARE incoming VI minutes per stock item"), "default": 60, "validator": int},
+        "MECH_VI_MIN": {"name": _("-MECH incoming VI minutes per stock item requiring VI"), "default": 12, "validator": int},
+        "BOARD_VI_MIN": {"name": _("Assembled-board VI minutes per board"), "default": 90, "validator": int},
+        "PRESS_FIT_MIN": {"name": _("Press Fit minutes per board"), "default": 30, "validator": int},
+        "BU_MIN": {"name": _("Bring-Up minutes per board"), "default": 60, "validator": int},
+        "EEPROM_MIN": {"name": _("EEPROM programming/test minutes per board"), "default": 15, "validator": int},
+        "SW_MIN": {"name": _("Software Test minutes per board"), "default": 120, "validator": int},
+        "FINAL_ASSEMBLY_MIN": {"name": _("Final assembly minutes per finished unit"), "default": 240, "validator": int},
     }
 
     STATUS_ALIASES = {
@@ -93,7 +96,6 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             pk = int(pk)
         except (TypeError, ValueError):
             return []
-        # Keep panel discovery fast; planning runs only after the panel renders.
         return [{
             "key": "production-planning-panel",
             "title": _("Production Plan"),
@@ -109,9 +111,30 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         except Exception:
             return 0
 
+    def add_hours(self, start, hours):
+        """Date-level planning: any work consumes business-day capacity.
+
+        Eight hours starting on Nov 5 therefore makes the next operation available
+        Nov 6, matching the shop-floor planning convention used by this plugin.
+        """
+        h = max(D(0), D(hours))
+        if h <= 0:
+            return day(start)
+        per_day = max(1, self.setting("WORK_HOURS_DAY"))
+        days = int((h / D(per_day)).to_integral_value(rounding="ROUND_CEILING"))
+        return add_business_days(start, days)
+
     @staticmethod
     def norm(value):
         return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+    @staticmethod
+    def ipn(part):
+        return str(getattr(part, "IPN", "") or "")
+
+    @staticmethod
+    def build_ref(build):
+        return str(getattr(build, "reference", "") or f"Build {build.pk}")
 
     @staticmethod
     def custom_statuses():
@@ -119,6 +142,16 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         try:
             for s in StockStatus.custom_queryset():
                 out[int(s.key)] = str(s.label or s.name or "")
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def custom_logical_statuses():
+        out = {}
+        try:
+            for s in StockStatus.custom_queryset():
+                out[int(s.key)] = int(s.logical_key)
         except Exception:
             pass
         return out
@@ -135,70 +168,72 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         except Exception:
             return str(getattr(item, "status", ""))
 
-    @staticmethod
-    def ipn(part):
-        return str(getattr(part, "IPN", "") or "")
-
-    @staticmethod
-    def build_ref(build):
-        return str(getattr(build, "reference", "") or f"Build {build.pk}")
-
     def stock(self, part):
+        qs = StockItem.objects.filter(part=part, quantity__gt=0)
+        fields = ["pk", "part_id", "quantity", "status", "status_custom_key"]
+        # StockItem.build is the InvenTree link between a BO and its output item.
         try:
-            return list(StockItem.objects.filter(part=part, quantity__gt=0).only(
-                "pk", "part_id", "quantity", "status", "status_custom_key"))
-        except Exception:
-            return list(StockItem.objects.filter(part=part))
-
-    def available_qty(self, part):
-        # InvenTree availability is represented by logical stock status. Custom
-        # unavailable statuses (e.g. Quarantine) resolve to an unavailable logical key.
-        custom = {}
-        try:
-            for s in StockStatus.custom_queryset():
-                custom[int(s.key)] = int(s.logical_key)
+            StockItem._meta.get_field("build")
+            fields.append("build_id")
         except Exception:
             pass
-        total = D(0)
-        for item in self.stock(part):
-            logical = int(getattr(item, "status", 0) or 0)
-            ckey = getattr(item, "status_custom_key", None)
-            try:
-                if ckey is not None and int(ckey) in custom:
-                    logical = custom[int(ckey)]
-            except Exception:
-                pass
-            try:
-                available = bool(StockStatus.is_available(logical))
-            except Exception:
-                available = logical not in (50, 75, 100)
-            if available:
-                total += D(item.quantity)
-        return total
+        try:
+            return list(qs.only(*fields))
+        except Exception:
+            return list(qs)
 
-    def pipeline(self, part):
+    def is_build_output(self, item):
+        return bool(getattr(item, "build_id", None) or getattr(item, "build", None))
+
+    def logical_available(self, item, custom_logical):
+        logical = int(getattr(item, "status", 0) or 0)
+        ckey = getattr(item, "status_custom_key", None)
+        try:
+            if ckey is not None and int(ckey) in custom_logical:
+                logical = custom_logical[int(ckey)]
+        except Exception:
+            pass
+        try:
+            return bool(StockStatus.is_available(logical))
+        except Exception:
+            return logical not in (50, 75, 100)
+
+    def stock_state(self, part):
+        """Separate finished usable stock from BO-created incomplete outputs.
+
+        BO output items are WIP regardless of when they were created. They become
+        usable for a parent BO only at Pass SW. Non-output stock follows normal
+        InvenTree availability semantics.
+        """
         custom = self.custom_statuses()
-        exact = {1:D(0),2:D(0),3:D(0),4:D(0),5:D(0)}
+        custom_logical = self.custom_logical_statuses()
+        finished = D(0)
+        exact = {0:D(0), 1:D(0), 2:D(0), 3:D(0), 4:D(0), 5:D(0)}
         bad = D(0)
         for item in self.stock(part):
+            qty = D(item.quantity)
             label = self.status_label(item, custom)
             key = self.norm(label)
-            qty = D(item.quantity)
             stage = self.STATUS_ALIASES.get(key)
-            if stage:
-                exact[stage] += qty
-            elif "fail" in key or "rework" in key or "quarantine" in key:
-                bad += qty
-        cumulative, running = {}, D(0)
-        for stage in range(5, 0, -1):
-            running += exact[stage]
-            cumulative[stage] = running
-        return {
-            "pass_vi": cumulative[1], "pass_press_fit": cumulative[2],
-            "pass_bu": cumulative[3], "eeprom_pass": cumulative[4],
-            "pass_sw": cumulative[5], "failed_rework": bad,
-            "exact": exact,
-        }
+            output = self.is_build_output(item)
+            if output:
+                if stage == 5:
+                    finished += qty
+                    exact[5] += qty
+                elif stage:
+                    exact[stage] += qty
+                elif "fail" in key or "rework" in key or "quarantine" in key:
+                    bad += qty
+                else:
+                    # An output may be created at any time; creation alone is not
+                    # evidence that assembly or testing has happened.
+                    exact[0] += qty
+            elif self.logical_available(item, custom_logical):
+                finished += qty
+        return {"finished":finished, "exact":exact, "failed_rework":bad}
+
+    def available_qty(self, part):
+        return self.stock_state(part)["finished"]
 
     def bom(self, part):
         try:
@@ -216,25 +251,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             from build.status_codes import BuildStatus
             qs = qs.filter(status=BuildStatus.PRODUCTION.value)
         except Exception:
-            try: qs = qs.filter(status=20)
-            except Exception: pass
+            qs = qs.filter(status=20)
         return list(qs.order_by("id"))
-
-    def bare_part(self, build):
-        try:
-            for line in BuildLine.objects.filter(build=build).select_related("bom_item__sub_part"):
-                p = getattr(getattr(line, "bom_item", None), "sub_part", None)
-                if p and self.ipn(p).upper().endswith("-BARE"):
-                    return p
-        except Exception:
-            pass
-        p = getattr(build, "part", None)
-        if p:
-            for item in self.bom(p):
-                sub = self.subpart(item)
-                if sub and self.ipn(sub).upper().endswith("-BARE"):
-                    return sub
-        return None
 
     def po_coverage(self, part, need):
         try:
@@ -251,90 +269,119 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             ordered=D(getattr(line,"quantity",0))
             received=D(getattr(line,"received",None) or getattr(line,"received_quantity",None) or 0)
             outstanding=max(D(0),ordered-received)
-            if outstanding <= 0: continue
+            if outstanding <= 0:
+                continue
             order=getattr(line,"order",None)
             po_target=day(getattr(order,"target_date",None))
             line_target=day(getattr(line,"target_date",None))
             target=line_target or po_target
-            rows.append({
-                "effective":target,
-                "po_target":po_target,
-                "line_target":line_target,
-                "qty":outstanding,
-                "ref":str(getattr(order,"reference","") or ""),
-            })
+            rows.append({"effective":target,"po_target":po_target,"line_target":line_target,"qty":outstanding,"ref":str(getattr(order,"reference","") or "")})
         rows.sort(key=lambda x:(x["effective"] is None,x["effective"] or date.max))
         remaining=max(D(0),D(need)); full=None; refs=[]
         for row in rows:
-            if row["ref"] and row["ref"] not in refs: refs.append(row["ref"])
+            if row["ref"] and row["ref"] not in refs:
+                refs.append(row["ref"])
             remaining-=row["qty"]
             if remaining <= 0:
-                full=row["effective"]; break
-        return {
-            "open":sum((x["qty"] for x in rows),D(0)),
-            "earliest":next((x["effective"] for x in rows if x["effective"]),None),
-            "full":full,
-            "refs":refs,
-            "lines":[{
-                "po":x["ref"],
-                "qty":float(x["qty"]),
-                "po_target_date":iso(x["po_target"]),
-                "line_target_date":iso(x["line_target"]),
-                "effective_date":iso(x["effective"]),
-            } for x in rows],
-        }
+                full=row["effective"]
+                break
+        return {"open":sum((x["qty"] for x in rows),D(0)),"earliest":next((x["effective"] for x in rows if x["effective"]),None),"full":full,"refs":refs,
+                "lines":[{"po":x["ref"],"qty":float(x["qty"]),"po_target_date":iso(x["po_target"]),"line_target_date":iso(x["line_target"]),"effective_date":iso(x["effective"])} for x in rows]}
+
+    def inspection_hours(self, part, quantity):
+        ipn = self.ipn(part).upper()
+        qty = D(quantity)
+        if ipn.endswith("-BARE"):
+            return qty * D(self.setting("BARE_VI_MIN")) / D(60), "-BARE VI"
+        # Mechanical incoming inspection applies to material in a -MECH BOM.
+        if "-MECH" in ipn:
+            return qty * D(self.setting("MECH_VI_MIN")) / D(60), "-MECH VI"
+        return D(0), ""
+
+    def material_requirement(self, part, need):
+        """Forecast when a purchased/raw material quantity is received + inspected."""
+        available = self.available_qty(part)
+        shortage = max(D(0), D(need) - available)
+        po = self.po_coverage(part, shortage) if shortage > 0 else {"open":D(0),"earliest":None,"full":None,"refs":[],"lines":[]}
+        received_date = date.today() if shortage <= 0 else po.get("full")
+        inspection_qty = shortage if shortage > 0 else D(0)
+        # Existing stock is already assumed inspected; only incoming shortage adds VI.
+        hours, inspection = self.inspection_hours(part, inspection_qty)
+        ready = self.add_hours(received_date, hours) if received_date else None
+        return {"ipn":self.ipn(part),"required":float(D(need)),"available":float(available),"shortage":float(shortage),
+                "received_date":iso(received_date),"inspection_hours":float(hours),"inspection":inspection,"ready_date":iso(ready),
+                "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[])}
+
+    def board_bom_material_ready(self, board_part, board_qty, depth=0):
+        """Find the date at which material for board_qty is received and inspected."""
+        if depth > 4:
+            return None, [], [f"Recursion limit reached at {self.ipn(board_part)}"]
+        details=[]; unresolved=[]; latest=date.today()
+        for item in self.bom(board_part):
+            if bool(getattr(item,"optional",False)):
+                continue
+            sub=self.subpart(item)
+            if not sub:
+                continue
+            qty=D(getattr(item,"quantity",0))*D(board_qty)
+            m=self.material_requirement(sub,qty)
+            details.append(m)
+            rd=day(m.get("ready_date"))
+            if m["shortage"]>0 and not rd:
+                unresolved.append(self.ipn(sub) or str(getattr(sub,"name","") or sub.pk))
+            elif rd and rd>latest:
+                latest=rd
+        return (None if unresolved else latest),details,unresolved
+
+    def remaining_stage_hours(self, stage, qty):
+        q=D(qty)
+        mins=D(0)
+        if stage < 1: mins += D(self.setting("BOARD_VI_MIN"))*q
+        if stage < 2: mins += D(self.setting("PRESS_FIT_MIN"))*q
+        if stage < 3: mins += D(self.setting("BU_MIN"))*q
+        if stage < 4: mins += D(self.setting("EEPROM_MIN"))*q
+        if stage < 5: mins += D(self.setting("SW_MIN"))*q
+        return mins / D(60)
 
     def board_forecast(self, part, required_shortage, builds):
-        p=self.pipeline(part); ready=p["pass_sw"]
-        need=max(D(0),D(required_shortage)-ready)
-        result={
-            "pipeline":{k:float(v) for k,v in p.items() if k!="exact"},
-            "ready_now":float(ready),"need_after_ready":float(need),
-            "forecast_ready":None,"basis":"","bare":[],
-        }
-        if need <= 0:
-            result["basis"]="Existing Pass SW quantity covers the requirement."
-            result["forecast_ready"]=iso(date.today())
-            return result
-        today=date.today(); candidates=[]; ex=p["exact"]
-        # Quantity physically at each current stage. Later-stage quantities were
-        # already removed by using exact buckets here.
-        if ex[4]>0: candidates.append((ex[4],add_days(today,self.setting("SW_DAYS")+self.setting("COATING_DAYS")),"EEPROM Pass"))
-        if ex[3]>0: candidates.append((ex[3],add_days(today,self.setting("SW_DAYS")+self.setting("COATING_DAYS")),"Pass BU"))
-        if ex[2]>0: candidates.append((ex[2],add_days(today,self.setting("BU_DAYS")+self.setting("SW_DAYS")+self.setting("COATING_DAYS")),"Pass Press Fit"))
-        if ex[1]>0: candidates.append((ex[1],add_days(today,self.setting("BU_DAYS")+self.setting("SW_DAYS")+self.setting("COATING_DAYS")),"Pass VI"))
-        for b in builds:
-            bare=self.bare_part(b)
-            if not bare: continue
-            bqty=D(getattr(b,"quantity",0)); bavail=self.available_qty(bare)
-            bneed=max(D(0),bqty-bavail); po=self.po_coverage(bare,bneed)
-            start=None; why=""
-            if bneed<=0:
-                start=add_days(today,1); why="-BARE stock available"
-            elif po["full"]:
-                start=add_days(po["full"],1); why="full -BARE PO coverage"
-            elif po["earliest"]:
-                start=add_days(po["earliest"],1); why="earliest -BARE PO (partial coverage)"
-            if start:
-                finish=add_days(start,self.setting("PCBA_DAYS")+self.setting("VI_DAYS")+self.setting("BU_DAYS")+self.setting("SW_DAYS")+self.setting("COATING_DAYS"))
-                candidates.append((bqty,finish,why))
-            result["bare"].append({
-                "child_build":self.build_ref(b),"ipn":self.ipn(bare),
-                "available":float(bavail),"needed":float(bneed),"open_po_qty":float(po["open"]),
-                "earliest_po_date":iso(po["earliest"]),"full_coverage_po_date":iso(po["full"]),"po_references":po["refs"],
-                "po_lines":po.get("lines",[]),
-            })
+        state=self.stock_state(part); ex=state["exact"]
+        # available_qty already includes Pass SW outputs, so shortage is only what
+        # still has to become ready.
+        need=max(D(0),D(required_shortage))
+        result={"pipeline":{"unstarted_output":float(ex[0]),"pass_vi":float(ex[1]),"pass_press_fit":float(ex[2]),"pass_bu":float(ex[3]),"eeprom_pass":float(ex[4]),"pass_sw":float(ex[5]),"failed_rework":float(state["failed_rework"])},
+                "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[]}
+        if need<=0:
+            result["forecast_ready"]=iso(date.today()); result["basis"]="Finished / Pass SW stock covers the requirement."; return result
+        today=date.today(); candidates=[]
+        # Existing WIP with a proven test stage can be forecast directly from its
+        # current stage. Unstarted BO outputs are intentionally NOT treated as assembled.
+        for stage,label in [(4,"EEPROM Pass"),(3,"Pass BU"),(2,"Pass Press Fit"),(1,"Pass VI")]:
+            qty=ex[stage]
+            if qty>0:
+                hrs=self.remaining_stage_hours(stage,qty)
+                candidates.append((qty,self.add_hours(today,hrs),f"{label} WIP + {float(hrs):g}h remaining test"))
+        staged=sum((ex[s] for s in (1,2,3,4)),D(0))
+        remaining_unassembled=max(D(0),need-staged)
+        if remaining_unassembled>0:
+            material_ready,materials,unresolved=self.board_bom_material_ready(part,remaining_unassembled)
+            result["material"]=materials
+            if material_ready and not unresolved:
+                assembled=add_business_days(material_ready,self.setting("PCBA_DAYS"))
+                test_hours=self.remaining_stage_hours(0,remaining_unassembled)
+                finish=self.add_hours(assembled,test_hours)
+                candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW"))
+            elif unresolved:
+                result["basis"]="Material blockers without dated full coverage: " + ", ".join(unresolved)
         candidates.sort(key=lambda x:(x[1] is None,x[1] or date.max))
         remaining=need; chosen=None; basis=[]
         for qty,when,why in candidates:
             if not when or qty<=0: continue
-            take=min(remaining,qty); remaining-=take; chosen=when
-            basis.append(f"{float(take):g} from {why}")
+            take=min(remaining,qty); remaining-=take; chosen=when; basis.append(f"{float(take):g} from {why}")
             if remaining<=0: break
         if chosen and remaining<=0:
             result["forecast_ready"]=iso(chosen); result["basis"]="; ".join(basis)
-        else:
-            result["basis"]=(f"Only {float(need-remaining):g} of {float(need):g} additional boards can currently be dated; {float(remaining):g} remain unscheduled.")
+        elif not result["basis"]:
+            result["basis"]=f"Only {float(need-remaining):g} of {float(need):g} additional boards can currently be dated; {float(remaining):g} remain unscheduled."
         return result
 
     def requirement(self, build, item):
@@ -342,23 +389,23 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if not part: return None
         required=D(getattr(item,"quantity",0))*D(getattr(build,"quantity",0))
         available=self.available_qty(part); shortage=max(D(0),required-available)
-        builds=self.child_builds(part,build.pk); pipe=self.pipeline(part)
-        board_like=bool(builds and (any(self.bare_part(b) for b in builds) or any(pipe[k]>0 for k in ("pass_vi","pass_bu","pass_sw"))))
+        builds=self.child_builds(part,build.pk); state=self.stock_state(part)
+        board_like=bool(builds or any(state["exact"][s]>0 for s in range(0,6))) and bool(self.bom(part))
         forecast=self.board_forecast(part,shortage,builds) if board_like and shortage>0 else None
-        return {
-            "part_id":part.pk,"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
-            "required":float(required),"available":float(available),"shortage":float(shortage),
-            "board_like":board_like,
-            "child_builds":[{"id":b.pk,"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],
-            "forecast":forecast,
-        }
+        return {"bom_item_id":item.pk,"optional":bool(getattr(item,"optional",False)),"part_id":part.pk,"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
+                "required":float(required),"available":float(available),"shortage":float(shortage),"board_like":board_like,
+                "child_builds":[{"id":b.pk,"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],"forecast":forecast}
 
-    def plan(self, build_id):
+    def plan(self, build_id, optional_ids=None):
         build=Build.objects.select_related("part").get(pk=build_id); part=getattr(build,"part",None)
         if not part: raise ValueError("Build Order has no output part")
-        rows=[]
+        optional_ids=set(optional_ids or [])
+        rows=[]; optional_rows=[]
         for item in self.bom(part):
-            if bool(getattr(item,"optional",False)): continue
+            if bool(getattr(item,"optional",False)) and item.pk not in optional_ids:
+                sub=self.subpart(item)
+                optional_rows.append({"bom_item_id":item.pk,"ipn":self.ipn(sub),"name":str(getattr(sub,"name","") or ""),"quantity_per_build":float(D(getattr(item,"quantity",0)))})
+                continue
             row=self.requirement(build,item)
             if row: rows.append(row)
         material=date.today(); critical=None; unresolved=[]
@@ -368,19 +415,26 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             if fd:
                 if fd>=material: material=fd; critical=row["ipn"] or row["name"]
             else: unresolved.append(row["ipn"] or row["name"])
-        ready=None if unresolved else add_days(material,self.setting("FINAL_ASSEMBLY_DAYS")+self.setting("FINAL_TEST_DAYS"))
+        final_hours=D(self.setting("FINAL_ASSEMBLY_MIN"))*D(getattr(build,"quantity",0))/D(60)
+        ready=None if unresolved else self.add_hours(material,final_hours)
         target=day(getattr(build,"target_date",None))
         status="BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
-        return {
-            "plugin_version":self.VERSION,
-            "build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(D(getattr(build,"quantity",0))),"target_date":iso(target)},
-            "requirements":rows,
-            "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"unresolved":unresolved,"status":status},
-            "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-            "notes":["V1 uses Monday-Friday business days only.","Board progress comes from current stock status and later pass states count toward earlier stages.","-BARE PO timing uses the current line target date when set; otherwise the line inherits the current PO target date.","V1 does not yet model shared technician or assembly-house capacity."],
-        }
+        return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(D(getattr(build,"quantity",0))),"target_date":iso(target)},
+                "requirements":rows,"optional_requirements":optional_rows,"selected_optional_ids":sorted(optional_ids),
+                "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
+                "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM selections are stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date."]}
 
     def build_api(self, request, build_id, **kwargs):
-        try: return JsonResponse(self.plan(int(build_id)))
-        except Build.DoesNotExist: return JsonResponse({"error":"Build Order not found"},status=404)
-        except Exception as exc: return JsonResponse({"error":f"{type(exc).__name__}: {exc}"},status=500)
+        try:
+            raw=request.GET.get("optional","")
+            optional_ids=[]
+            for value in raw.split(","):
+                try:
+                    if value.strip(): optional_ids.append(int(value))
+                except Exception: pass
+            return JsonResponse(self.plan(int(build_id),optional_ids=optional_ids))
+        except Build.DoesNotExist:
+            return JsonResponse({"error":"Build Order not found"},status=404)
+        except Exception as exc:
+            return JsonResponse({"error":f"{type(exc).__name__}: {exc}"},status=500)
