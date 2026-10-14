@@ -28,3 +28,13 @@ For an existing child BO, allocate enough stock to fully cover a BOM component. 
 ## Regression
 
 Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effective-date fallback, inspection durations, final assembly and unresolved critical-requirement behavior remain unchanged from V2.2.
+
+
+## V2.4 allocation regression
+
+1. Open BO-0179 Production Plan and inspect TR8D / child BO-0128.
+2. Confirm components whose BO-0128 BuildLines are fully allocated do not appear as blockers.
+3. Confirm a partially allocated BuildLine is evaluated only for `unallocated_quantity()`, not its full BOM quantity.
+4. Confirm `TR8D Assembly` (and any IPN/name ending in ` Assembly`) remains excluded.
+5. Confirm genuine uncovered material still shows free-stock and PO coverage.
+6. Confirm part and Build Order links remain clickable.

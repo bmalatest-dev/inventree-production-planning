@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.4
+
+- Use `BuildLine.unallocated_quantity()` as the source of truth for existing child-BO material requirements.
+- Capture native BuildLine required, allocated, consumed and unallocated quantities for traceability.
+- Fully allocated / consumed child-BO lines are no longer rediscovered as material blockers.
+- Retain unallocated-stock and PO analysis only for the true uncovered remainder.
+- Retain V2.3 clickable parts and `* Assembly` costing-line exclusion.
+
+# Changelog
+
 ## 0.2.3
 
 - Make displayed production requirement parts, optional parts, and material blockers clickable links to their InvenTree Part pages.

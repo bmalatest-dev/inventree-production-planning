@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.3 production forecast with allocation-aware blockers, costing-line exclusions and navigable parts."
+    DESCRIPTION = "V2.4 production forecast using authoritative BuildLine allocation state for existing child builds."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -262,23 +262,52 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def build_url(build):
         return f"/web/manufacturing/build-order/{getattr(build, 'pk', '')}/" if build else None
 
-    def committed_build_qty(self, builds, part):
-        """Quantity already committed to the supplied BO(s), allocated or consumed.
+    def child_build_line_state(self, builds, part):
+        """Return authoritative requirement / allocation state from child BuildLines.
 
-        BuildItem is InvenTree's stock-to-build allocation record. Counting these
-        records means a component already dealt with for an existing child BO is not
-        incorrectly rediscovered as a new material shortage.
+        InvenTree already knows the allocation state of each BuildLine.  V2.4 uses
+        BuildLine.unallocated_quantity() directly instead of trying to reconstruct
+        allocations from BuildItem / StockItem rows.  This mirrors the state shown
+        by InvenTree's Allocated Stock tab and also preserves InvenTree's own
+        consumed-vs-allocated semantics.
         """
-        if not builds:
-            return D(0)
-        try:
-            qs = BuildItem.objects.filter(build__in=builds, stock_item__part=part)
-            total = D(0)
-            for obj in qs.only("quantity"):
-                total += D(getattr(obj, "quantity", 0))
-            return total
-        except Exception:
-            return D(0)
+        result = {
+            "found": False,
+            "required": D(0),
+            "allocated": D(0),
+            "consumed": D(0),
+            "unallocated": D(0),
+            "lines": 0,
+        }
+        if not builds or not part:
+            return result
+
+        for build in builds:
+            try:
+                lines = build.build_lines.filter(bom_item__sub_part=part)
+            except Exception:
+                lines = []
+
+            for line in lines:
+                result["found"] = True
+                result["lines"] += 1
+                result["required"] += D(getattr(line, "quantity", 0))
+                result["consumed"] += D(getattr(line, "consumed", 0))
+                try:
+                    result["allocated"] += D(line.allocated_quantity())
+                except Exception:
+                    pass
+                try:
+                    result["unallocated"] += max(D(0), D(line.unallocated_quantity()))
+                except Exception:
+                    # Conservative compatibility fallback only.  Normal V2.4 path
+                    # is the native InvenTree unallocated_quantity() method.
+                    result["unallocated"] += max(
+                        D(0),
+                        D(getattr(line, "quantity", 0))
+                        - D(getattr(line, "consumed", 0)),
+                    )
+        return result
 
     def globally_allocated_qty(self, part):
         """Return stock quantity already committed to any build order."""
@@ -403,8 +432,20 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             if self.is_assembly_cost_line(sub):
                 continue
             qty=D(getattr(item,"quantity",0))*D(board_qty)
-            committed=self.committed_build_qty(builds or [], sub) if depth == 0 else D(0)
-            remaining=max(D(0),qty-committed)
+
+            # For an existing child BO, its BuildLines are the source of truth.
+            # A fully allocated / consumed line has unallocated_quantity() == 0
+            # and therefore cannot reappear here as a material blocker.
+            line_state = self.child_build_line_state(builds or [], sub) if depth == 0 else {"found": False}
+            if line_state.get("found"):
+                remaining = D(line_state.get("unallocated", 0))
+                if remaining <= 0:
+                    continue
+            else:
+                # No matching child BuildLine (e.g. recursive BOM planning before a
+                # child BO exists): retain BOM-derived requirement behavior.
+                remaining = qty
+
             available=self.unallocated_available_qty(sub)
             shortage=max(D(0),remaining-available)
             if shortage <= 0:
@@ -424,7 +465,11 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 continue
 
             m=self.material_requirement(sub,remaining)
-            m["build_committed"] = float(committed)
+            if line_state.get("found"):
+                m["buildline_required"] = float(D(line_state.get("required", 0)))
+                m["buildline_allocated"] = float(D(line_state.get("allocated", 0)))
+                m["buildline_consumed"] = float(D(line_state.get("consumed", 0)))
+                m["buildline_unallocated"] = float(D(line_state.get("unallocated", 0)))
             if m["shortage"] <= 0:
                 continue
             m["path"] = " > ".join([self.part_label(board_part), self.part_label(sub)])
@@ -552,7 +597,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.3: existing child-BO allocations / consumed BuildItems count as committed coverage; only the uncovered remainder is tested against unallocated stock."]}
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers."]}
 
     def build_api(self, request, build_id, **kwargs):
         try:
