@@ -10,3 +10,11 @@
 8. Confirm board test defaults are VI 1.5h, Press Fit 0.5h, BU 1h, EEPROM 0.25h, SW 2h per board.
 9. Confirm final assembly adds 4h per top-level unit.
 10. Select an optional BOM item, confirm it appears as a requirement and remains selected after refresh in the same browser.
+
+
+## V2.1 acceptance checks
+- For CYAN optional radio boards, set different total quantities (for example Rx 4, Tx 4, LO 8) and confirm Need matches those totals.
+- Set an optional quantity to 0 and confirm it is excluded.
+- For TR8D, confirm satisfied BOM components are hidden from Forecast basis.
+- If TR8D-BARE is the only true leaf shortage, confirm it is the only material blocker displayed.
+- Confirm intermediate assembly parts are recursively expanded rather than shown as blockers when their own BOM can identify the actual shortage.

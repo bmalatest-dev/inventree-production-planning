@@ -1,8 +1,8 @@
 # InvenTree Production Planning
 
-Production Planning V2 forecasts Build Order material readiness and completion from finished stock, BO-created WIP outputs, BOM material availability, open PO dates, incoming inspection, assembly lead time, and remaining board test stages.
+Production Planning V2.1 forecasts Build Order material readiness and completion from finished stock, BO-created WIP outputs, BOM material availability, open PO dates, incoming inspection, assembly lead time, and remaining board test stages.
 
-## V2 planning rules
+## V2.1 planning rules
 
 - A BO-created incomplete output never counts as available merely because the StockItem exists.
 - A board becomes ready for a parent BO at **Pass SW**.
@@ -18,3 +18,7 @@ Production Planning V2 forecasts Build Order material readiness and completion f
 - Optional top-level BOM items can be selected in the panel and are remembered per BO in that browser.
 
 All defaults are plugin settings and can be adjusted later as measured production data improves.
+
+
+## V2.1 reporting
+Optional BOM lines are quantity-selectable per Build Order. Enter 0 to exclude an option or the required total quantity up to the BOM maximum. Recursive BOM analysis is performed internally, but the Production Plan displays only leaf-level material blockers; satisfied components are not listed.
