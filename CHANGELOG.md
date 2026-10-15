@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.8 - 2026-10-15
+
+- Fix conformal-coated variant recognition when board identifiers are stored in Part Name and IPN is blank.
+- Resolve the conversion source directly from InvenTree `variant_of` (e.g. TR8MC -> TR8M).
+- Keep the trailing-C / Conformal Coated check as the workflow qualifier.
+- Preserve the v0.2.7 assumptions: 14 calendar days coating, 1.5h/board VI-POST-CC, and 2.0h/board SW-POST-CC.
+- No database migration.
+
 ## 0.2.7 - 2026-10-15
 
 - Forecast conformal-coated PCBA variants from their standard-PCBA variant source.

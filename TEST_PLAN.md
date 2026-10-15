@@ -58,7 +58,7 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 - Verify TR8M/TR8P/TR8B readiness paths show `10 business days assembly`.
 
 
-## V0.2.7 conformal coating tests
+## V0.2.8 conformal coating tests
 
 1. Create/use a coated PCBA variant such as TR8RC whose `variant_of` is TR8R. Verify a top-level BOM requiring TR8RC does not recurse directly to TR8R bare-PCB manufacture when enough ready TR8R exists.
 2. With 0 TR8RC and at least 3 ready TR8R, require 3 TR8RC. Verify the readiness path shows 14 calendar days conformal coating, Convert to TR8RC, 4.5h VI-POST-CC, and 6h SW-POST-CC.
