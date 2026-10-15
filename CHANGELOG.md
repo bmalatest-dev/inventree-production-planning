@@ -1,3 +1,11 @@
+# v3.6.0
+
+- Added scenario-only **Adjust Planning Times** editor.
+- Supports plan-wide timing overrides and per-board overrides.
+- Recalculate Plan reruns the forecast and Gantt without changing persistent plugin settings.
+- Board-specific overrides take precedence over plan-wide overrides, which take precedence over configured plugin defaults.
+- Existing WIP continues from its proven production stage using the applicable board timing.
+
 ## 3.4.1
 - Move Gantt generation to an explicit **Generate Gantt** action after a Production Plan is calculated.
 - Support Gantt generation for a single Build Order.
@@ -87,7 +95,7 @@
 - Ignore past-due open PO dates as forecast supply dates while retaining them in PO detail as stale information.
 - Reset the PCBA assembly setting under a new key with a 10-business-day default, avoiding legacy saved 5-day values.
 
-## 3.5.0
+## 3.6.0
 - Added expandable activity-level rows to the Production Gantt for both single- and multi-build plans.
 - Manufactured requirements now expose dated schedule segments for PCB fabrication/remake, incoming VI, PCBA assembly, Board VI, Press Fit, Bring-Up, EEPROM, Software Test, conformal coating, VI-POST-CC and SW-POST-CC when applicable.
 - Added Expand All / Collapse All controls while keeping the default Gantt compact.

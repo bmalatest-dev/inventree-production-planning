@@ -14,6 +14,8 @@ from stock.models import StockItem
 from stock.status_codes import StockStatus
 
 from . import PLUGIN_VERSION
+import json
+from contextvars import ContextVar
 
 
 def D(value):
@@ -53,11 +55,13 @@ def iso(value):
     return d.isoformat() if d else None
 
 
+_TIMING_OVERRIDES = ContextVar("production_planning_timing_overrides", default={})
+
 class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, InvenTreePlugin):
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.5.0 recursive production planning with expandable activity-level single- and multi-build forecast Gantt visualization."
+    DESCRIPTION = "V3.6.0 production planning with adjustable global and per-board scenario timings plus expandable forecast Gantt."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -113,11 +117,40 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
-    def setting(self, key):
+    def setting(self, key, part=None):
+        """Return configured timing, honoring request-scoped scenario overrides.
+
+        Override precedence: per-board override -> this-plan global override ->
+        persistent plugin setting. Overrides are simulation-only and never saved.
+        """
+        ov = _TIMING_OVERRIDES.get() or {}
+        try:
+            if part is not None:
+                pid = str(getattr(part, "pk", "") or "")
+                pipn = self.ipn(part).strip()
+                boards = ov.get("boards", {}) or {}
+                board = boards.get(pid) or (boards.get(pipn) if pipn else None) or {}
+                if key in board:
+                    return max(0, int(float(board[key])))
+            glob = ov.get("global", {}) or {}
+            if key in glob:
+                return max(0, int(float(glob[key])))
+        except Exception:
+            pass
         try:
             return max(0, int(self.get_setting(key) or 0))
         except Exception:
             return 0
+
+    def timing_overrides_from_request(self, request):
+        raw = request.GET.get("timing", "") or ""
+        if not raw:
+            return {}
+        try:
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
 
     def add_hours(self, start, hours):
         """Date-level planning: any work consumes business-day capacity.
@@ -375,7 +408,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         need = max(D(0), D(need))
         po = po or self.po_coverage(part, need, pool=pool, reserve=True)
         po_date = po.get("full")
-        fab_date = date.today() + timedelta(days=self.setting("FAILED_VI_REPLACEMENT_DAYS"))
+        fab_date = date.today() + timedelta(days=self.setting("FAILED_VI_REPLACEMENT_DAYS", part))
         # An overdue PO target is not a credible future replacement forecast. Keep it
         # visible in PO details, but compare only today/future dated coverage to new fab.
         credible_po = po_date if po_date and po_date >= date.today() else None
@@ -384,7 +417,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         hours, inspection = self.inspection_hours(part, need)
         ready = self.add_hours(replacement_date, hours) if replacement_date else None
         return {"replacement_source": source, "replacement_date": iso(replacement_date), "new_fabrication_date": iso(fab_date),
-                "replacement_lead_days": self.setting("FAILED_VI_REPLACEMENT_DAYS"), "inspection_hours": float(hours),
+                "replacement_lead_days": self.setting("FAILED_VI_REPLACEMENT_DAYS", part), "inspection_hours": float(hours),
                 "inspection": inspection, "ready_date": iso(ready), "open_po_qty": float(po.get("open", 0)),
                 "po_references": po.get("refs", []), "po_lines": po.get("lines", [])}
 
@@ -687,9 +720,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         labels = [self.ipn(part).upper(), str(getattr(part, "name", "") or "").upper()]
         qty = D(quantity)
         if any(v.endswith("-BARE") for v in labels if v):
-            return qty * D(self.setting("BARE_VI_MIN")) / D(60), "-BARE VI"
+            return qty * D(self.setting("BARE_VI_MIN", part)) / D(60), "-BARE VI"
         if any("-MECH" in v for v in labels if v):
-            return qty * D(self.setting("MECH_VI_MIN")) / D(60), "-MECH VI"
+            return qty * D(self.setting("MECH_VI_MIN", part)) / D(60), "-MECH VI"
         return D(0), ""
 
     def material_requirement(self, part, need, pool=None):
@@ -890,17 +923,17 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         unresolved=[b for b in blockers if not b.get("ready_date")]
         return (None if unresolved else latest), blockers, unresolved
 
-    def remaining_stage_hours(self, stage, qty):
+    def remaining_stage_hours(self, stage, qty, part=None):
         q=D(qty)
         mins=D(0)
-        if stage < 1: mins += D(self.setting("BOARD_VI_MIN"))*q
-        if stage < 2: mins += D(self.setting("PRESS_FIT_MIN"))*q
-        if stage < 3: mins += D(self.setting("BU_MIN"))*q
-        if stage < 4: mins += D(self.setting("EEPROM_MIN"))*q
-        if stage < 5: mins += D(self.setting("SW_MIN"))*q
+        if stage < 1: mins += D(self.setting("BOARD_VI_MIN", part))*q
+        if stage < 2: mins += D(self.setting("PRESS_FIT_MIN", part))*q
+        if stage < 3: mins += D(self.setting("BU_MIN", part))*q
+        if stage < 4: mins += D(self.setting("EEPROM_MIN", part))*q
+        if stage < 5: mins += D(self.setting("SW_MIN", part))*q
         return mins / D(60)
 
-    def board_test_segments(self, start, stage, qty, prefix=""):
+    def board_test_segments(self, start, stage, qty, prefix="", part=None):
         """Return dated shop-floor test phases from the proven current stage."""
         q=D(qty); cursor=day(start); out=[]
         phases=[
@@ -912,7 +945,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         ]
         for target,label,key in phases:
             if stage >= target: continue
-            hours=D(self.setting(key))*q/D(60)
+            hours=D(self.setting(key, part))*q/D(60)
             end=self.add_hours(cursor,hours)
             out.append({"label":f"{prefix}{label}","start":iso(cursor),"end":iso(end),"kind":"test","hours":float(hours),"quantity":float(q)})
             cursor=end
@@ -949,8 +982,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             qty=self.claim_wip(part,stage,ex[stage],need-claimed_staged,pool=pool)
             claimed_staged += qty
             if qty>0:
-                hrs=self.remaining_stage_hours(stage,qty)
-                segs, seg_end = self.board_test_segments(today, stage, qty, prefix=f"{label} WIP — ")
+                hrs=self.remaining_stage_hours(stage,qty,part)
+                segs, seg_end = self.board_test_segments(today, stage, qty, prefix=f"{label} WIP — ", part=part)
                 candidates.append((qty,seg_end,f"{label} WIP + {float(hrs):g}h remaining test",segs))
         # In a multi-build plan, only WIP actually claimed by this priority can
         # reduce the quantity which still has to be assembled.  Using the raw
@@ -961,11 +994,11 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled,builds=builds,pool=pool)
             result["material"]=blockers
             if material_ready and not unresolved:
-                assembled=add_business_days(material_ready,self.setting("PCBA_ASSEMBLY_DAYS"))
-                test_hours=self.remaining_stage_hours(0,remaining_unassembled)
-                test_segs, finish = self.board_test_segments(assembled, 0, remaining_unassembled)
+                assembled=add_business_days(material_ready,self.setting("PCBA_ASSEMBLY_DAYS", part))
+                test_hours=self.remaining_stage_hours(0,remaining_unassembled,part)
+                test_segs, finish = self.board_test_segments(assembled, 0, remaining_unassembled, part=part)
                 segs=self.material_segments(blockers)
-                segs.append({"label":"PCBA assembly","start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":self.setting("PCBA_ASSEMBLY_DAYS")})
+                segs.append({"label":"PCBA assembly","start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":self.setting("PCBA_ASSEMBLY_DAYS", part)})
                 segs.extend(test_segs)
                 candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW",segs))
             elif unresolved:
@@ -1057,20 +1090,20 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             if not material:
                 source_basis.append("source-board BOM has no unresolved leaf-material shortages after shared virtual supply is applied")
 
-        coating_done = source_date + timedelta(days=self.setting("CONFORMAL_COATING_DAYS"))
-        post_vi_hours = D(self.setting("POST_CC_VI_MIN"))*need/D(60)
-        post_sw_hours = D(self.setting("POST_CC_SW_MIN"))*need/D(60)
+        coating_done = source_date + timedelta(days=self.setting("CONFORMAL_COATING_DAYS", source))
+        post_vi_hours = D(self.setting("POST_CC_VI_MIN", source))*need/D(60)
+        post_sw_hours = D(self.setting("POST_CC_SW_MIN", source))*need/D(60)
         vi_done=self.add_hours(coating_done,post_vi_hours)
         ready=self.add_hours(vi_done,post_sw_hours)
         post_hours = post_vi_hours + post_sw_hours
         schedule_segments=[]
         if source_need > 0 and sf:
             schedule_segments.extend(sf.get("schedule_segments", []))
-        schedule_segments.append({"label":"Conformal coating","start":iso(source_date),"end":iso(coating_done),"kind":"coating","calendar_days":self.setting("CONFORMAL_COATING_DAYS")})
+        schedule_segments.append({"label":"Conformal coating","start":iso(source_date),"end":iso(coating_done),"kind":"coating","calendar_days":self.setting("CONFORMAL_COATING_DAYS", source)})
         schedule_segments.append({"label":"VI-POST-CC","start":iso(coating_done),"end":iso(vi_done),"kind":"test","hours":float(post_vi_hours)})
         schedule_segments.append({"label":"SW-POST-CC","start":iso(vi_done),"end":iso(ready),"kind":"test","hours":float(post_sw_hours)})
         basis = "; ".join(source_basis)
-        basis += f" -> {self.setting('CONFORMAL_COATING_DAYS')} calendar days conformal coating -> Convert to {self.part_label(coated_part)} -> {float(D(self.setting('POST_CC_VI_MIN'))*need/D(60)):g}h VI-POST-CC + {float(D(self.setting('POST_CC_SW_MIN'))*need/D(60)):g}h SW-POST-CC"
+        basis += f" -> {self.setting('CONFORMAL_COATING_DAYS', source)} calendar days conformal coating -> Convert to {self.part_label(coated_part)} -> {float(D(self.setting('POST_CC_VI_MIN', source))*need/D(60)):g}h VI-POST-CC + {float(D(self.setting('POST_CC_SW_MIN', source))*need/D(60)):g}h SW-POST-CC"
         return {
             "ready_now": 0.0, "need_after_ready": float(need), "forecast_ready": iso(ready),
             "basis": basis, "material": material,
@@ -1262,7 +1295,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     material=fd; critical=row["ipn"] or row["name"]
             else:
                 unresolved.append(row["ipn"] or row["name"] or f"Part {row['part_id']}")
-        final_hours=D(self.setting("FINAL_ASSEMBLY_MIN"))*D(getattr(build,"quantity",0))/D(60)
+        final_hours=D(self.setting("FINAL_ASSEMBLY_MIN", part))*D(getattr(build,"quantity",0))/D(60)
         ready=None if unresolved else self.add_hours(material,final_hours)
         target=day(getattr(build,"target_date",None))
         if unresolved:
@@ -1295,7 +1328,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def builds_api(self, request, **kwargs):
         return JsonResponse({"plugin_version":self.VERSION,"builds":self.candidate_builds()})
 
-    def multi_plan(self, build_ids, optional_by_build=None):
+    def multi_plan(self, build_ids, optional_by_build=None, timing_overrides=None):
         ids=[]
         for x in build_ids:
             try:
@@ -1305,6 +1338,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if not ids:
             raise ValueError("Select at least one Build Order")
         optional_by_build=optional_by_build or {}
+        token = _TIMING_OVERRIDES.set(timing_overrides or {})
         pool=self.new_pool(); plans=[]
         for priority,bid in enumerate(ids,1):
             claim_start=len(pool["claims"])
@@ -1362,7 +1396,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # material families are evaluated and consume virtual stock, but omitted.
         resources={k:v for k,v in resources.items() if D(v.get("total_shortage",0))>0}
         for c in constraints.values(): c["max_ready"]=iso(c["max_ready"])
-        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"planning_date":iso(date.today()),"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(resources)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"]}
+        result={"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"planning_date":iso(date.today()),"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(resources)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"],"timing_overrides":timing_overrides or {}}
+        _TIMING_OVERRIDES.reset(token)
+        return result
 
     def multi_api(self, request, **kwargs):
         try:
@@ -1377,7 +1413,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     bid,bom_id,qty=int(bits[0]),int(bits[1]),max(D(0),D(bits[2]))
                     optional_by_build.setdefault(bid,{})[bom_id]=qty
                 except Exception: pass
-            return JsonResponse(self.multi_plan([x for x in raw.split(",") if x.strip()],optional_by_build=optional_by_build))
+            return JsonResponse(self.multi_plan([x for x in raw.split(",") if x.strip()],optional_by_build=optional_by_build,timing_overrides=self.timing_overrides_from_request(request)))
         except Build.DoesNotExist:
             return JsonResponse({"error":"One or more Build Orders were not found"},status=404)
         except Exception as exc:
@@ -1401,7 +1437,14 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                         optional_quantities[int(value)]=D(1)
                 except Exception:
                     pass
-            return JsonResponse(self.plan(int(build_id),optional_quantities=optional_quantities))
+            timing = self.timing_overrides_from_request(request)
+            token = _TIMING_OVERRIDES.set(timing)
+            try:
+                result = self.plan(int(build_id),optional_quantities=optional_quantities)
+                result["timing_overrides"] = timing
+                return JsonResponse(result)
+            finally:
+                _TIMING_OVERRIDES.reset(token)
         except Build.DoesNotExist:
             return JsonResponse({"error":"Build Order not found"},status=404)
         except Exception as exc:
