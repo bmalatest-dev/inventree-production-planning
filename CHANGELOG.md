@@ -1,3 +1,13 @@
+## 3.2.0 - 2026-10-15
+
+- Treat a selected Build Order whose output is a conformal-coated PCBA as production demand for the full BO quantity, rather than as a generic top-level BOM/final-assembly plan.
+- Consume standard source-PCBA stock in shared priority order. Source boards already promised to a higher-priority coated requirement cannot be reused by a later BO.
+- When source PCBAs are exhausted, forecast manufacture of the missing standard boards from the remaining shared WIP, component stock / variants and dated PO supply before coating.
+- Fix staged-WIP sharing so later BOs cannot reduce their assembly quantity using WIP already claimed by a higher-priority BO.
+- Make successful source-board material coverage explicit in the readiness path when all required BOM material is covered by remaining virtual supply.
+- Replace version-history-style notes with a clean Planning Assumptions section grouped into Time Related Assumptions, Inventory & Material Assumptions, and Planning Behavior.
+- No database migration.
+
 ## 3.1.0 - 2026-10-15
 
 - Add an explicit optional-BOM selection step before a combined production plan is calculated.

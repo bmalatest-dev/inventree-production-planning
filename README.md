@@ -57,3 +57,10 @@ The combined result shows the overall forecast completion date, unresolved BO co
 ## v3.1 multi-build detail
 
 Multi-build planning now pauses for optional BOM quantities when any selected BO contains optional top-level lines. Each optional quantity is scoped to its BO and a quantity of 0 excludes it. The combined result includes expandable per-BO forecasts plus combined material/resource detail so priority-driven shortages can be traced to the affected BO and BOM path. The planner remains simulation-only and never allocates stock.
+
+
+## v3.2 shared source-board planning
+
+When a selected BO produces a conformal-coated PCBA, the planner treats the BO quantity as new production demand. Higher-priority requirements first claim ready standard source boards. A later coated-board BO then sees only the remaining source boards and must forecast any missing source PCBAs through assembly and test using the remaining shared component / WIP / PO pools. This is simulation-only and does not create allocations.
+
+The UI now presents a concise **Planning Assumptions** section grouped by timing, inventory/material rules, and planning behavior rather than listing historical version changes.

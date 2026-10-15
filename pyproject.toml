@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inventree-production-planning"
-version = "3.1.0"
-description = "Detailed priority-aware multi-build production planning forecast for InvenTree Build Orders."
+version = "3.2.0"
+description = "Priority-aware multi-build production planning with shared source-board consumption for InvenTree Build Orders."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

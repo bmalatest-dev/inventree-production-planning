@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.1 detailed multi-build planning with optional BOM selection and priority-aware shared virtual supply."
+    DESCRIPTION = "V3.2 priority-aware production planning with shared source-board consumption and clearer assumptions."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -785,13 +785,18 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         today=date.today(); candidates=[]
         # Existing WIP with a proven test stage can be forecast directly from its
         # current stage. Unstarted BO outputs are intentionally NOT treated as assembled.
+        claimed_staged=D(0)
         for stage,label in [(4,"EEPROM Pass"),(3,"Pass BU"),(2,"Pass Press Fit"),(1,"Pass VI")]:
-            qty=self.claim_wip(part,stage,ex[stage],need,pool=pool)
+            qty=self.claim_wip(part,stage,ex[stage],need-claimed_staged,pool=pool)
+            claimed_staged += qty
             if qty>0:
                 hrs=self.remaining_stage_hours(stage,qty)
                 candidates.append((qty,self.add_hours(today,hrs),f"{label} WIP + {float(hrs):g}h remaining test"))
-        staged=sum((ex[s] for s in (1,2,3,4)),D(0))
-        remaining_unassembled=max(D(0),need-staged)
+        # In a multi-build plan, only WIP actually claimed by this priority can
+        # reduce the quantity which still has to be assembled.  Using the raw
+        # database WIP total here would let a later BO reuse WIP already consumed
+        # virtually by a higher-priority BO.
+        remaining_unassembled=max(D(0),need-claimed_staged)
         if remaining_unassembled>0:
             material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled,builds=builds,pool=pool)
             result["material"]=blockers
@@ -875,8 +880,10 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     "conformal_coating": True,
                 }
             source_date = day(sf.get("forecast_ready")) or source_date
-            source_basis.append(f"{float(source_need):g} {self.ipn(source) or 'standard PCBA'} forecast ready {iso(source_date)}")
+            source_basis.append(f"{float(source_need):g} {self.ipn(source) or self.part_label(source) or 'standard PCBA'} forecast ready {iso(source_date)}")
             material = sf.get("material", [])
+            if not material:
+                source_basis.append("all required source-board BOM material is covered by remaining virtual supply")
 
         coating_done = source_date + timedelta(days=self.setting("CONFORMAL_COATING_DAYS"))
         post_hours = (D(self.setting("POST_CC_VI_MIN")) + D(self.setting("POST_CC_SW_MIN"))) * need / D(60)
@@ -911,10 +918,71 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "required":float(required),"available":float(available),"shortage":float(shortage),"board_like":board_like,
                 "child_builds":[{"id":b.pk,"url":self.build_url(b),"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],"forecast":forecast}
 
+    def coated_build_output_plan(self, build, part, pool=None, priority=None):
+        """Plan a BO whose *output* is a conformal-coated PCBA.
+
+        A selected BO is production demand, not a request which can be satisfied
+        by unrelated finished coated stock.  Forecast the full BO quantity from
+        the standard source board.  In multi-build mode this consumes the same
+        shared exact source-board/WIP/material/PO pools as higher-priority BOs,
+        so source boards promised to an earlier coated requirement cannot be
+        reused by this BO.
+        """
+        qty=max(D(0),D(getattr(build,"quantity",0)))
+        forecast=self.conformal_forecast(part,qty,pool=pool)
+        unresolved=[] if forecast and forecast.get("forecast_ready") else [self.part_label(part)]
+        ready=day((forecast or {}).get("forecast_ready"))
+        target=day(getattr(build,"target_date",None))
+        status="BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
+        source=self.conformal_source_part(part)
+        row={"bom_item_id":None,"optional":False,"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
+             "required":float(qty),"available":0.0,"shortage":float(qty),"board_like":True,"child_builds":[],"forecast":forecast,"build_output":True}
+        return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(qty),"target_date":iso(target)},
+                "priority":priority,"requirements":[row],"optional_requirements":[],"selected_optional_quantities":{},
+                "summary":{"material_ready":iso(ready),"forecast_ready":iso(ready),"critical_requirement":self.part_label(part),
+                           "critical_display":f"Produce {self.part_label(part)} from {self.part_label(source)}" if source else self.part_label(part),
+                           "unresolved":unresolved,"status":status,"final_assembly_hours":0.0,"coated_build_output":True},
+                "settings":{k.lower():self.setting(k) for k in self.SETTINGS},"assumptions":self.planning_assumptions()}
+
+    def planning_assumptions(self):
+        return {
+            "Time Related Assumptions":[
+                f"Working day: {self.setting('WORK_HOURS_DAY')} hours; weekends are skipped for business-day calculations.",
+                f"PCBA assembly: {self.setting('PCBA_ASSEMBLY_DAYS')} business days after all required material is received and inspected.",
+                f"Incoming -BARE VI: {self.setting('BARE_VI_MIN')/60:g} hour per stock item.",
+                f"Incoming -MECH VI: {self.setting('MECH_VI_MIN')/60:g} hour per stock item when applicable.",
+                f"Board test per board: VI {self.setting('BOARD_VI_MIN')/60:g}h; Press Fit {self.setting('PRESS_FIT_MIN')/60:g}h; Bring-Up {self.setting('BU_MIN')/60:g}h; EEPROM {self.setting('EEPROM_MIN')/60:g}h; Software Test {self.setting('SW_MIN')/60:g}h.",
+                f"Final assembly: {self.setting('FINAL_ASSEMBLY_MIN')/60:g} hours per finished unit.",
+                f"Conformal coating: {self.setting('CONFORMAL_COATING_DAYS')} calendar days, then VI-POST-CC {self.setting('POST_CC_VI_MIN')/60:g}h/board and SW-POST-CC {self.setting('POST_CC_SW_MIN')/60:g}h/board.",
+                f"Undated / Failed-VI -BARE replacement fabrication fallback: {self.setting('FAILED_VI_REPLACEMENT_DAYS')} calendar days when no earlier credible PO fully covers the shortage."
+            ],
+            "Inventory & Material Assumptions":[
+                "Pass SW is the board-ready state and counts as usable finished PCBA stock.",
+                "BO-created incomplete outputs do not count as ready merely because they exist; staged WIP is forecast from its actual passed test stage.",
+                "Ordinary BOM material uses InvenTree native variant-aware available stock and usable stock counts regardless of storage location.",
+                "Existing child BO BuildLines are authoritative for allocated / consumed / unallocated material state.",
+                "Pending material requires incoming inspection; Failed VI, quarantined or otherwise unavailable material does not count as ready.",
+                "PO timing uses line target date when set, otherwise the PO header target date; past-due ETA lines are informational rather than historical forecast supply.",
+                "BOM entries ending in ' Assembly' are costing-only and are excluded from material blockers."
+            ],
+            "Planning Behavior":[
+                "Multi-build planning is simulation-only and does not create or change InvenTree allocations or Build Orders.",
+                "Selected BOs consume shared virtual finished stock, source-board stock, staged WIP, component stock and dated PO supply in explicit priority order.",
+                "Conformal-coated variants consume their standard source PCBAs first; if source boards are insufficient, the planner forecasts manufacture of the missing source boards before coating and post-coating tests.",
+                "Optional top-level BOM quantities are selected per Build Order; a quantity of 0 excludes the optional line."
+            ]
+        }
+
     def plan(self, build_id, optional_quantities=None, pool=None, priority=None):
         build=Build.objects.select_related("part").get(pk=build_id); part=getattr(build,"part",None)
         if not part: raise ValueError("Build Order has no output part")
         optional_quantities={int(k):max(D(0),D(v)) for k,v in (optional_quantities or {}).items()}
+        # A BO whose output is itself a conformal-coated PCBA must forecast the
+        # production of that output. This is especially important in a combined
+        # plan after a higher-priority BO has already claimed the ready standard
+        # source boards.
+        if self.conformal_source_part(part):
+            return self.coated_build_output_plan(build,part,pool=pool,priority=priority)
         rows=[]; optional_rows=[]
         build_qty=D(getattr(build,"quantity",0))
         for item in self.bom(part):
@@ -952,7 +1020,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "priority":priority,"requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time.","V2.6: -BARE shortages use a 28-calendar-day fabrication fallback when no credible future PO fully covers the shortage; past-due PO ETAs are informational only; PCBA assembly defaults to 10 business days.","V2.7: conformal-coated PCBA variants use the InvenTree variant relationship plus the trailing-C convention or Conformal Coated name.","V2.8: coated/source identifiers use IPN when present and fall back to Part Name when IPN is blank (e.g. TR8MC -> TR8M). Coating remains 14 calendar days, followed by VI-POST-CC at 1.5h/board and SW-POST-CC at 2.0h/board; these durations are configurable settings.","V2.9: usable stock counts regardless of storage location, including External locations. Existing child BO BuildLines remain authoritative; only active build allocations reserve otherwise-available stock, so historical completed/cancelled allocations do not create false shortages.","V2.10: ordinary BOM material uses InvenTree native variant-aware available stock.","V3.0: multi-build planning is simulation-only. Selected BOs share virtual stock, WIP and dated PO supply in explicit priority order; no InvenTree allocations are created or changed."]}
+                "assumptions":self.planning_assumptions()}
+
 
     def candidate_builds(self):
         qs=Build.objects.select_related("part").all()
