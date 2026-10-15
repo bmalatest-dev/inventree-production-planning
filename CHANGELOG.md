@@ -1,3 +1,11 @@
+# v3.6.2
+
+- Fix board-specific timing override sections so each board is collapsed by default and independently expandable.
+- Keep the plan-wide timing table visible while the planning-times editor is open.
+- Use native collapsible sections for robust rendering.
+- Rename the frontend static asset for this release to prevent a cached v3.6.1 script from being reused.
+- No planning calculation changes and no migration.
+
 # v3.6.1
 
 - Board-specific timing overrides are now collapsed by default for a cleaner planning-times editor.

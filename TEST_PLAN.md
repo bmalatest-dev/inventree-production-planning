@@ -69,3 +69,14 @@
 4. Re-open the board and confirm the entered values remain.
 5. Recalculate and confirm the timing override still affects only the intended board.
 6. Reset Overrides and confirm counts/values clear.
+
+
+## v3.6.2 collapsed board timing regression
+
+1. Open a Production Plan and click **Adjust Planning Times**.
+2. Confirm **This plan — all boards** remains fully visible.
+3. Confirm every board-specific row is collapsed by default.
+4. Expand one board and confirm only that board table opens.
+5. Enter an override, collapse the board, reopen it, and confirm the value remains.
+6. Recalculate and confirm the override changes the forecast while unrelated boards retain their timings.
+7. Refresh the page after installing v3.6.2 and confirm the collapsed UI is present without clearing the browser cache.
