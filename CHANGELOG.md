@@ -1,3 +1,12 @@
+## 3.2.2
+
+- Reworked the multi-build summary into a true **Combined Material Shortages** view.
+- Aggregates every leaf/raw-material requirement encountered across all selected Build Orders, not only blockers which bubble up into the forecast.
+- Uses the same variant-family grouping and priority-aware virtual stock pool as planning, preventing compatible variant stock from being double-counted.
+- Shows combined total required, stock available to the selected plan, current-stock shortage, open PO supply, and per-priority BO demand.
+- Fully covered material is still evaluated and consumes virtual supply, but is omitted from the shortage report.
+- No migration required.
+
 ## 3.2.1 - 2026-10-15
 
 - In multi-build Build Forecast detail, show only requirements with a remaining shortage (`Short > 0`); satisfied BOM lines remain part of the calculation but are hidden from the report.

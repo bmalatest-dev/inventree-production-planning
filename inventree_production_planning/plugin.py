@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.2 priority-aware production planning with shared source-board consumption and clearer assumptions."
+    DESCRIPTION = "V3.2.2 priority-aware production planning with consolidated multi-build material shortages."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -503,7 +503,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
 
     @staticmethod
     def new_pool():
-        return {"material":{},"exact":{},"wip":{},"po":{},"claims":[]}
+        return {"material":{},"exact":{},"wip":{},"po":{},"claims":[],"material_demand":[],"current_build":None}
 
     def bom(self, part):
         try:
@@ -641,6 +641,30 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "replacement_date":replacement.get("replacement_date"),
                 "new_fabrication_date":replacement.get("new_fabrication_date"),
                 "replacement_lead_days":replacement.get("replacement_lead_days"),
+            })
+
+        # Multi-build reporting needs the complete material-demand picture, not
+        # only blockers which bubble up into a forecast. Record every leaf/raw
+        # material requirement here, including requirements fully covered by
+        # virtual stock. The shared pool has already applied build priority, so
+        # summing these observations produces true combined demand while the
+        # per-build rows show where the shortage lands after higher priorities.
+        if pool is not None:
+            current = pool.get("current_build") or {}
+            pool.setdefault("material_demand", []).append({
+                "family_key": self.material_family_key(part),
+                "part_id": getattr(part, "pk", None),
+                "part_url": self.part_url(part),
+                "label": self.part_label(part),
+                "build_id": current.get("id"),
+                "build": current.get("reference"),
+                "priority": current.get("priority"),
+                "required": float(D(need)),
+                "available": float(available),
+                "shortage": float(shortage),
+                "open_po_qty": float(D(po.get("open", 0))),
+                "ready_date": result.get("ready_date"),
+                "po_lines": result.get("po_lines") or [],
             })
         return result
 
@@ -1058,6 +1082,11 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         pool=self.new_pool(); plans=[]
         for priority,bid in enumerate(ids,1):
             claim_start=len(pool["claims"])
+            try:
+                bmeta=Build.objects.only("id","reference").get(pk=bid)
+                pool["current_build"]={"id":bid,"reference":self.build_ref(bmeta),"priority":priority}
+            except Exception:
+                pool["current_build"]={"id":bid,"reference":f"BO {bid}","priority":priority}
             plan=self.plan(bid,optional_quantities=optional_by_build.get(bid,{}),pool=pool,priority=priority)
             for claim in pool["claims"][claim_start:]:
                 claim["build_id"]=bid
@@ -1067,9 +1096,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         dated=[day((p.get("summary") or {}).get("forecast_ready")) for p in plans]
         unresolved=[p for p in plans if not (p.get("summary") or {}).get("forecast_ready")]
         complete=max([d for d in dated if d],default=None) if not unresolved else None
-        constraints={}; resources={}
+        constraints={}
         for p in plans:
-            bref=p["build"]["reference"]; priority=p.get("priority")
+            bref=p["build"]["reference"]
             for row in p.get("requirements",[]):
                 for m in ((row.get("forecast") or {}).get("material") or []):
                     if D(m.get("shortage",0))<=0: continue
@@ -1078,13 +1107,36 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     if bref not in c["builds"]: c["builds"].append(bref)
                     rd=day(m.get("ready_date"))
                     if rd and (not c["max_ready"] or rd>c["max_ready"]): c["max_ready"]=rd
-                    r=resources.setdefault(key,{"part_id":m.get("part_id"),"label":m.get("label") or m.get("ipn") or m.get("name"),"part_url":m.get("part_url"),"total_required":0.0,"total_shortage":0.0,"open_po_qty":0.0,"builds":[]})
-                    r["total_required"]+=float(D(m.get("required",0)))
-                    r["total_shortage"]+=float(D(m.get("shortage",0)))
-                    r["open_po_qty"]=max(r["open_po_qty"],float(D(m.get("open_po_qty",0))))
-                    r["builds"].append({"build":bref,"priority":priority,"required":float(D(m.get("required",0))),"available":float(D(m.get("available",0))),"shortage":float(D(m.get("shortage",0))),"ready_date":m.get("ready_date"),"path":m.get("path"),"po_lines":m.get("po_lines") or []})
+
+        # Consolidate *all* leaf/raw material demand encountered while planning
+        # the selected BOs. Group by the same variant-family key used by the
+        # shared virtual stock pool so compatible variants are not double-counted.
+        resources={}
+        for m in pool.get("material_demand", []):
+            key=m.get("family_key") or str(m.get("part_id") or m.get("label"))
+            r=resources.setdefault(key,{
+                "part_id":m.get("part_id"),"label":m.get("label"),"part_url":m.get("part_url"),
+                "total_required":0.0,"total_available":0.0,"total_shortage":0.0,
+                "open_po_qty":0.0,"builds":[]
+            })
+            r["total_required"] += float(D(m.get("required",0)))
+            r["total_available"] += float(D(m.get("available",0)))
+            r["total_shortage"] += float(D(m.get("shortage",0)))
+            # Each later priority sees PO supply after earlier reservations. The
+            # largest observed value is therefore the initial shared open supply,
+            # rather than a quantity which should be summed repeatedly.
+            r["open_po_qty"] = max(r["open_po_qty"], float(D(m.get("open_po_qty",0))))
+            r["builds"].append({
+                "build":m.get("build"),"priority":m.get("priority"),
+                "required":float(D(m.get("required",0))),"available":float(D(m.get("available",0))),
+                "shortage":float(D(m.get("shortage",0))),"ready_date":m.get("ready_date"),
+                "po_lines":m.get("po_lines") or []
+            })
+        # This section is specifically a shortage report: fully covered combined
+        # material families are evaluated and consume virtual stock, but omitted.
+        resources={k:v for k,v in resources.items() if D(v.get("total_shortage",0))>0}
         for c in constraints.values(): c["max_ready"]=iso(c["max_ready"])
-        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(constraints)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"]}
+        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(resources)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"]}
 
     def multi_api(self, request, **kwargs):
         try:
