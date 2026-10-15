@@ -1,4 +1,4 @@
-# InvenTree Production Planning v0.2.4
+# InvenTree Production Planning v3.0.0
 
 Production Planning forecasts when active Build Orders can be completed from finished stock, WIP test stages, child Build Orders, material availability, PO dates, incoming inspection, assembly lead time and final test.
 
@@ -43,3 +43,12 @@ A conformal-coated PCBA is recognized when it is an InvenTree variant of a stand
 ## V0.2.10 variant-aware component availability
 
 For ordinary purchased/raw BOM material, Production Planning uses InvenTree's native `Part.available_stock` value. This intentionally matches the availability shown on InvenTree Build Order lines and includes compatible Part variants. Finished PCBAs and WIP continue to use exact-part stock-state logic so manufacturing variants such as conformal-coated boards are not treated as interchangeable finished stock.
+
+
+## V3.0 multi-build production planning
+
+V3.0 adds a planning-only multi-Build-Order view inside the Production Plan panel. Select active Production BOs, place them in explicit priority order, and calculate them as one shared production scenario. Priority 1 receives first claim on the virtual supply pool, followed by Priority 2, and so on.
+
+The shared planning pool covers ordinary component stock (using InvenTree variant-aware availability), exact finished-board stock, WIP test-stage quantities, and dated open-PO supply. These are virtual claims only: Production Planning does not create, modify, or commit InvenTree allocations. Reordering the selected BOs and recalculating is therefore safe and can be used to compare production priorities.
+
+The combined result shows the overall forecast completion date, unresolved BO count, shared constraints, and each BO forecast in priority order. The existing single-BO Production Plan remains available and unchanged.

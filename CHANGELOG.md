@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0 - 2026-10-15
+
+- Add multi-Build-Order production planning from the Production Plan panel.
+- Select active Production BOs and explicitly reorder them by planning priority.
+- Combined planning is simulation-only and never creates or changes InvenTree allocations.
+- Selected BOs share virtual ordinary-component stock, including InvenTree-compatible variant stock, so the same inventory cannot satisfy multiple plans.
+- Selected BOs share exact finished-board stock and WIP stage quantities without treating manufacturing variants as interchangeable finished boards.
+- Dated open-PO supply is shared in priority order so the same incoming quantity cannot cover multiple selected BOs.
+- Preserve v0.2.10 single-BO planning and all existing conformal-coating, WIP, inspection, child-BO, status, and timing rules.
+- Add combined forecast summary, shared-constraint summary, and per-BO forecasts in priority order.
+- No database migration.
+
 ## 0.2.10 - 2026-10-15
 
 - Use InvenTree's native `Part.available_stock` for ordinary purchased/raw BOM material availability.

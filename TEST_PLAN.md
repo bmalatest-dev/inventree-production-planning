@@ -1,4 +1,4 @@
-# Production Planning v0.2.3 Test Plan
+# Production Planning v3.0.0 Test Plan
 
 ## Primary acceptance test — BO-0179 / TR8D
 
@@ -85,3 +85,17 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 3. Re-test BO-0182 TR8RC. The TR8R source-board material forecast should eliminate false shortages caused only by omitted component variants.
 4. Confirm finished PCBA and conformal-coated variant stock is still handled by exact manufacturing state and is not blindly substituted via `available_stock`.
 5. Confirm Failed VI, Pending, Quarantine/damaged handling and PO/fabrication fallback remain unchanged.
+
+
+## V3.0 multi-build acceptance tests
+
+1. Open any Production Plan and expand **Multi-Build Production Planning**. Confirm active Production BOs can be selected and reordered.
+2. Select two BOs that require the same ordinary component. Confirm Priority 1 consumes the shared virtual available quantity first and Priority 2 sees only the remainder.
+3. Repeat with a component whose availability includes InvenTree Part variants. Confirm the variant-aware pool is shared and not duplicated between BOs.
+4. Select two BOs that compete for the same dated PO line. Confirm the PO quantity is consumed virtually in priority order and cannot fully cover both unless its outstanding quantity is sufficient.
+5. Select BOs that require the same finished PCBA. Confirm exact ready-board stock is shared between the BOs and conformal-coated variants are not silently treated as interchangeable finished boards.
+6. Where both BOs can use the same staged WIP board quantity, confirm the WIP quantity is not promised twice.
+7. Reverse the BO priority and recalculate. Confirm constraints / forecast dates move with the priority change when supply is limited.
+8. Confirm no BuildItem, StockItem, allocation, PO, or Build Order record changes after calculating a combined plan.
+9. Confirm the normal single-BO Production Plan still matches v0.2.10 behavior for BO-0182.
+10. Confirm combined output reports each BO in selected priority order and provides an overall completion forecast or identifies unresolved BOs.
