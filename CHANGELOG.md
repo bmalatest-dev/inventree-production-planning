@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.10 - 2026-10-15
+
+- Use InvenTree's native `Part.available_stock` for ordinary purchased/raw BOM material availability.
+- Component availability now matches the Build Order UI and includes compatible variant stock.
+- Preserve exact-part stock-state logic for finished PCBAs, WIP stages, conformal-coated conversions, Failed VI, Pending inspection, and other manufacturing-state handling.
+- Prevent valid component variants from appearing as false leaf blockers in recursive board forecasts.
+- No database migration.
+
 ## 0.2.9 - 2026-10-15
 
 - Treat usable stock as location-neutral for Production Planning; stock in External / assembly-house locations can satisfy requirements.

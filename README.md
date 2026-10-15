@@ -38,3 +38,8 @@ Allocation and readiness are separate concepts. For an existing child BO, native
 ## V0.2.9 conformal coating planning
 
 A conformal-coated PCBA is recognized when it is an InvenTree variant of a standard PCBA and either follows the documented trailing-`C` IPN convention (for example `TR8R` -> `TR8RC`) or has `Conformal Coated` in its Part name. When coated stock is short, Production Planning uses ready standard boards first, forecasts any missing standard boards through the existing board-planning logic, then adds 14 calendar days for conformal coating and the configured post-CC VI and software-test time. Defaults are 90 minutes/board for `VI-POST-CC` and 120 minutes/board for `SW-POST-CC`.
+
+
+## V0.2.10 variant-aware component availability
+
+For ordinary purchased/raw BOM material, Production Planning uses InvenTree's native `Part.available_stock` value. This intentionally matches the availability shown on InvenTree Build Order lines and includes compatible Part variants. Finished PCBAs and WIP continue to use exact-part stock-state logic so manufacturing variants such as conformal-coated boards are not treated as interchangeable finished stock.

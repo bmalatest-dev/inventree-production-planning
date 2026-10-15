@@ -76,3 +76,12 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 3. Forecast a coated variant whose source board has an existing production BO; confirm the existing BO BuildLines / allocations are used before generic BOM shortage recursion.
 4. Confirm BuildItem allocations belonging only to completed/cancelled builds do not reduce current available stock.
 5. Re-test BO-0182 TR8RC: the TR8R source forecast should reduce to genuine uncovered material (expected BTL-0026SMG-1-PV / its PO) rather than unrelated false blockers.
+
+
+## V0.2.10 variant-aware material availability
+
+1. On BO-0174, verify `GRM033R6YA104KE14-PV` shows 12,543 available for planning (matching InvenTree `Part.available_stock`) rather than only 20 exact-Part StockItems.
+2. Confirm a purchased/raw BOM line can be satisfied by compatible variant stock when InvenTree reports that stock as available.
+3. Re-test BO-0182 TR8RC. The TR8R source-board material forecast should eliminate false shortages caused only by omitted component variants.
+4. Confirm finished PCBA and conformal-coated variant stock is still handled by exact manufacturing state and is not blindly substituted via `available_stock`.
+5. Confirm Failed VI, Pending, Quarantine/damaged handling and PO/fabrication fallback remain unchanged.

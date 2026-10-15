@@ -414,8 +414,31 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             return D(0)
 
     def unallocated_available_qty(self, part):
-        """Usable stock which is not already committed to another build."""
+        """Exact-part usable stock not already committed to another build.
+
+        This remains intentionally exact-part for finished PCBA / WIP planning,
+        where an InvenTree variant can represent a different manufacturing state
+        (for example a conformal-coated board) and must not be substituted blindly.
+        """
         return max(D(0), self.available_qty(part) - self.globally_allocated_qty(part))
+
+    def material_available_qty(self, part):
+        """Return InvenTree-native availability for ordinary BOM material.
+
+        InvenTree's ``Part.available_stock`` is the value shown to users on a
+        BuildLine and includes compatible variant stock.  Production Planning
+        must use the same value for purchased/raw BOM material so that a valid
+        component variant does not become a false shortage.
+
+        Do *not* use this for finished PCBAs / WIP: board variants can represent
+        a manufacturing conversion (e.g. conformal coating), for which the exact
+        stock-state logic above is required.
+        """
+        try:
+            return max(D(0), D(part.available_stock))
+        except Exception:
+            # Compatibility fallback for older InvenTree versions.
+            return self.unallocated_available_qty(part)
 
     def bom(self, part):
         try:
@@ -510,7 +533,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         the earlier of credible PO coverage and the configured 28-calendar-day
         fabrication fallback. Past-due PO dates remain informational only.
         """
-        available = self.unallocated_available_qty(part)
+        available = self.material_available_qty(part)
         shortage = max(D(0), D(need) - available)
         po = self.po_coverage(part, shortage) if shortage > 0 else {"open":D(0),"earliest":None,"full":None,"refs":[],"lines":[]}
         failed_vi = self.failed_vi_stock_qty(part) if shortage > 0 else D(0)
@@ -620,7 +643,10 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             else:
                 remaining = qty
 
-            available=self.unallocated_available_qty(sub)
+            # Match InvenTree BuildLine availability for ordinary BOM material,
+            # including compatible Part variants.  Exact-part stock remains in
+            # use for finished-board / WIP forecasting elsewhere.
+            available=self.material_available_qty(sub)
             shortage=max(D(0),remaining-available)
             if shortage <= 0:
                 continue
