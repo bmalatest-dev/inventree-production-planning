@@ -1,4 +1,12 @@
-# InvenTree Production Planning v3.0.0
+# InvenTree Production Planning v3.4.0
+
+## v3.4.0 forecast Gantt
+
+Multi-build results now include an inline **Production Gantt (Forecast)**. Each selected BO is shown in planning priority order from the planning date to its forecast completion date, with dated shortage requirements beneath it, target-date markers, and a separate final-assembly phase when that boundary is available from the forecast. Unscheduled requirements remain visibly marked rather than receiving invented dates.
+
+The Gantt is a visualization of the existing production forecast. It does not allocate inventory or reserve technician / machine capacity. A future capacity-planning phase can extend the structured schedule with resource-constrained start dates.
+
+Bare-PCB fallback wording now explicitly distinguishes a new PCB fabrication/remake estimate from an actual PO receipt date.
 
 ## v3.3.1 status-aware bare-PCB planning
 

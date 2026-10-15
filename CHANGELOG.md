@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.4.0
+- Add an inline **Production Gantt (Forecast)** to multi-build planning.
+- Show selected Build Orders in priority order with forecast-completion bars, shortage-requirement forecast rows, target-date markers, and final-assembly phases where separately known.
+- Gantt dates come from the same shared virtual-stock / recursive production simulation as the combined plan; the chart is planning-only and does not reserve labor or equipment capacity.
+- Clarify bare-PCB fallback wording: when no credible PO covers a `-BARE` shortage, show the configured fabrication lead time and estimated replacement receipt explicitly instead of labeling it generic expected coverage.
+- Preserve v3.3.1 status-aware `-BARE` PCB planning and recursive source-board forecasting.
+
 ## 3.3.1
 - Treat `-BARE` PCB stock by live VI status instead of generic `Part.available_stock`.
 - `Failed VI`, rework, quarantine and damaged bare PCBs never satisfy material demand.

@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.3.1 recursive production planning with status-aware bare-PCB replacement forecasting."
+    DESCRIPTION = "V3.4.0 recursive production planning with multi-build forecast Gantt visualization."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -1314,7 +1314,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # material families are evaluated and consume virtual stock, but omitted.
         resources={k:v for k,v in resources.items() if D(v.get("total_shortage",0))>0}
         for c in constraints.values(): c["max_ready"]=iso(c["max_ready"])
-        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(resources)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"]}
+        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"planning_date":iso(date.today()),"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(resources)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"]}
 
     def multi_api(self, request, **kwargs):
         try:

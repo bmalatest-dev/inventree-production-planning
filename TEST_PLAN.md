@@ -1,4 +1,4 @@
-# Production Planning v3.3.1 Test Plan
+# Production Planning v3.4.0 Test Plan
 
 ## Primary regression: BO-0182 / FR2TSC
 
@@ -32,3 +32,13 @@
 - Pending `-BARE` stock must schedule incoming VI rather than fabrication.
 - OK/passed `-BARE` stock must be usable immediately.
 - A credible PO which covers the shortage earlier than new fabrication must be selected instead.
+
+## v3.4.0 Gantt and wording regression
+
+1. Run the same multi-BO plan used to validate v3.3.1. Confirm a **Production Gantt (Forecast)** appears above Combined Material Shortages.
+2. Confirm every selected BO appears in the same priority order as the planner and its bar ends on the BO forecast-complete date.
+3. Confirm dated shortage requirements appear beneath their BO and unscheduled requirements are explicitly labelled `UNSCHEDULED`.
+4. For a BO with a target date, confirm the target-date marker is visible and does not change the forecast.
+5. For a normal top-level product BO with separately known material-ready and final-ready dates, confirm Final assembly is shown as its own phase.
+6. Re-test TR8DC with Failed VI TR8D-BARE and no credible PO coverage. The blocker must say `PCB fabrication fallback: 28 calendar days -> estimated receipt ...`, followed by incoming VI and the material-ready date. It must not call the fallback an existing PO receipt.
+7. Confirm the Gantt is display-only: calculating or opening it must not create allocations or modify BOs, StockItems or POs.
