@@ -1,41 +1,26 @@
-# Production Planning v3.2.0 Test Plan
+# Production Planning v3.3.0 Test Plan
 
-## Primary regression: shared FR2TS -> FR2TSC source boards
+## Primary regression: BO-0182 / FR2TSC
 
-1. Select BO-0182 as Priority 1 and BO-0183 (FR2TSC) as a later priority.
-2. Confirm BO-0182 claims the 40 ready FR2TS source boards required for its 40 FR2TSC requirement.
-3. Confirm BO-0183 does **not** reuse those same 40 FR2TS boards.
-4. BO-0183 must forecast manufacture of its required FR2TS source boards before conformal coating.
-5. If the remaining FR2TS BOM material is sufficient, the readiness path should explicitly state that all required source-board BOM material is covered by remaining virtual supply, and include PCBA assembly + VI / Press Fit / BU / EEPROM / SW timing before coating.
-6. If any shared component is insufficient after higher-priority BO claims, it must appear as a material blocker for BO-0183 with the applicable remaining PO coverage / unscheduled state.
-7. Reverse BO priority and confirm the shared source-board/component claims move with priority.
+1. Run BO-0182 alone and confirm existing non-FR2TSC forecasts remain sensible.
+2. Inspect FR2TSC. Failed VI / rework / quarantine FR2TS must not count as usable source-board supply.
+3. If additional FR2TS must be manufactured, the readiness path must explicitly show the source-board production calculation: material-ready date, 10 business days PCBA assembly (default), and VI / Press Fit / BU / EEPROM / SW hours.
+4. If the missing FR2TS cannot be manufactured because of leaf material shortages, those leaf parts must be shown as blockers rather than only reporting FR2TS or FR2TSC as the blocker.
 
-## Shared WIP regression
+## Multi-build regression
 
-Use two selected BOs which compete for staged WIP of the same source board. Confirm the same Pass VI / Press Fit / BU / EEPROM WIP quantity is not used by both plans.
+1. Select BO-0182, BO-0179 and the FR2TS BO in the same priority order used for v3.2.x testing.
+2. Confirm higher-priority BOs consume shared virtual source-board/component/PO supply first.
+3. Confirm the FR2TS BO is forecast as PCBA manufacture, not generic final assembly: BOM material readiness -> PCBA assembly -> VI -> Press Fit -> BU -> EEPROM -> SW.
+4. Confirm Build Forecast detail continues to show only shortages / production requirements that matter, not the complete satisfied BOM.
+5. Confirm Combined Material Shortages contains every unresolved leaf-material shortage found in any selected BO, including shortages from the selected FR2TS BO.
+6. Reverse priorities and confirm shortage ownership changes without modifying InvenTree allocations.
 
-## Existing v3.1 regressions
+## Expected invariants
 
-- Optional BOM lines still prompt per selected BO before combined calculation.
-- Ordinary component stock remains variant-aware.
-- Shared PO quantities are not promised twice.
-- No allocations or Build Orders are modified.
-- Single-BO parent-product forecasts remain consistent with v3.1 except where they directly plan a conformal-coated output BO.
-
-## Planning Assumptions UI
-
-Confirm the panel heading is simply **Planning Assumptions** and contains the grouped sections **Time Related Assumptions**, **Inventory & Material Assumptions**, and **Planning Behavior**. Historical V2/V3 release notes must not appear in this UI section.
-
-# Production Planning v3.1 Test Plan
-
-1. Regression: run BO-0182 alone and confirm the forecast remains consistent with v0.2.10/v3.0.
-2. Select a BO containing optional top-level BOM lines. Click Continue to Production Plan and confirm an Optional BOM Requirements prompt appears before the combined calculation.
-3. Set an optional quantity to 0 and confirm it is excluded. Set it above 0 and confirm the selected total quantity is included in that BO only.
-4. Select two or more BOs sharing a constrained component. Confirm Combined Material Shortages shows the part, total demand, affected BOs, and per-priority Need / Available / Short values.
-5. Reverse BO priority and recalculate. Confirm shared virtual stock / PO supply is consumed in the new order and shortages move accordingly.
-6. Expand each Build Forecast and confirm top-level requirements, readiness paths, material blockers, PO details and UNSCHEDULED causes are visible.
-7. Confirm no real stock allocations, BuildItems, Build Orders, or Purchase Orders are changed by calculation.
-8. Confirm variant-aware ordinary material availability still matches InvenTree available_stock behavior.
-9. Confirm conformal-coated board forecasting, WIP stage handling, incoming inspection and final assembly timing remain unchanged.
-
-No database migration is required.
+- Planning is simulation-only.
+- `* Assembly` BOM lines remain costing-only and never become material blockers.
+- Ordinary leaf components use InvenTree variant-aware availability.
+- Pass SW is board-ready; merely creating an incomplete output is not evidence of assembly completion.
+- Failed VI / rework / quarantine stock is unavailable for production or conformal conversion.
+- Optional BOM selection behavior remains unchanged.

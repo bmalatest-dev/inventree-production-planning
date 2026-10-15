@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.2.2 priority-aware production planning with consolidated multi-build material shortages."
+    DESCRIPTION = "V3.3.0 recursive production planning with explicit source-board timing and consolidated leaf-material shortages."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -243,8 +243,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     # An output may be created at any time; creation alone is not
                     # evidence that assembly or testing has happened.
                     exact[0] += qty
-            elif self.logical_available(item, custom_logical):
-                finished += qty
+            else:
+                # Non-output stock can also carry Failed VI / rework / quarantine
+                # states. Such stock is physical inventory but is not usable supply.
+                # Track it explicitly so conversion forecasts can explain why it was
+                # excluded instead of silently treating the physical count as ready.
+                if "fail" in key or "rework" in key or "quarantine" in key or "damage" in key:
+                    bad += qty
+                elif self.logical_available(item, custom_logical):
+                    finished += qty
         return {"finished":finished, "exact":exact, "failed_rework":bad}
 
     def available_qty(self, part):
@@ -882,17 +889,21 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if not source or need <= 0:
             return None
 
+        source_state = self.stock_state(source)
         source_ready = self.claim_exact_stock(source, need, pool=pool)
         source_need = max(D(0), need - source_ready)
         source_date = date.today()
         source_basis = []
         if min(need, source_ready) > 0:
-            source_basis.append(f"{float(min(need, source_ready)):g} {self.part_label(source)} ready")
+            source_basis.append(f"{float(min(need, source_ready)):g} usable {self.part_label(source)} ready now")
+        excluded_bad = D(source_state.get("failed_rework", 0))
+        if excluded_bad > 0:
+            source_basis.append(f"{float(excluded_bad):g} {self.part_label(source)} Failed VI/rework/quarantine stock excluded from usable source supply")
 
         material = []
         if source_need > 0:
             builds = self.child_builds(source, None)
-            state = self.stock_state(source)
+            state = source_state
             board_like = bool(builds or any(state["exact"][stage] > 0 for stage in range(0, 6))) and bool(self.bom(source))
             sf = self.board_forecast(source, source_need, builds, pool=pool) if board_like else None
             if not sf or not sf.get("forecast_ready"):
@@ -904,10 +915,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     "conformal_coating": True,
                 }
             source_date = day(sf.get("forecast_ready")) or source_date
-            source_basis.append(f"{float(source_need):g} {self.ipn(source) or self.part_label(source) or 'standard PCBA'} forecast ready {iso(source_date)}")
+            source_label = self.ipn(source) or self.part_label(source) or "standard PCBA"
+            source_basis.append(f"manufacture {float(source_need):g} {source_label}: {sf.get('basis') or ('forecast ready ' + iso(source_date))}")
+            source_basis.append(f"{float(source_need):g} manufactured {source_label} ready {iso(source_date)}")
             material = sf.get("material", [])
             if not material:
-                source_basis.append("all required source-board BOM material is covered by remaining virtual supply")
+                source_basis.append("source-board BOM has no unresolved leaf-material shortages after shared virtual supply is applied")
 
         coating_done = source_date + timedelta(days=self.setting("CONFORMAL_COATING_DAYS"))
         post_hours = (D(self.setting("POST_CC_VI_MIN")) + D(self.setting("POST_CC_SW_MIN"))) * need / D(60)
@@ -924,23 +937,86 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         }
 
     def requirement(self, build, item, optional_total_qty=None, pool=None):
+        """Plan one top-level BOM requirement using the same recursive engine.
+
+        Manufactured PCBAs / coated variants consume exact finished stock first and
+        recurse into production when short. Ordinary leaf material uses InvenTree's
+        variant-aware availability and material_requirement(), which also records the
+        demand for the combined multi-build shortage report.
+        """
         part=self.subpart(item)
         if not part or self.is_assembly_cost_line(part): return None
         if optional_total_qty is not None:
             required=max(D(0),D(optional_total_qty))
         else:
             required=D(getattr(item,"quantity",0))*D(getattr(build,"quantity",0))
-        available=self.claim_exact_stock(part, required, pool=pool); shortage=max(D(0),required-available)
-        builds=self.child_builds(part,build.pk); state=self.stock_state(part)
+
+        builds=self.child_builds(part,build.pk)
+        state=self.stock_state(part)
         coated_source=self.conformal_source_part(part)
-        board_like=bool(builds or any(state["exact"][s]>0 for s in range(0,6))) and bool(self.bom(part))
-        if shortage>0 and coated_source:
-            forecast=self.conformal_forecast(part,shortage,pool=pool)
+        has_bom=bool(self.bom(part))
+        board_like=bool(coated_source or (has_bom and (builds or any(state["exact"][s]>0 for s in range(0,6)))))
+
+        if board_like:
+            available=self.claim_exact_stock(part, required, pool=pool)
+            shortage=max(D(0),required-available)
+            if shortage>0 and coated_source:
+                forecast=self.conformal_forecast(part,shortage,pool=pool)
+            else:
+                forecast=self.board_forecast(part,shortage,builds,pool=pool) if shortage>0 else None
+        elif has_bom:
+            # A manufacturable subassembly with no current stock / child BO still
+            # needs recursive BOM planning rather than being reported as an opaque
+            # intermediate-part shortage.
+            available=self.claim_exact_stock(part, required, pool=pool)
+            shortage=max(D(0),required-available)
+            forecast=self.board_forecast(part,shortage,builds,pool=pool) if shortage>0 else None
+            board_like=True
         else:
-            forecast=self.board_forecast(part,shortage,builds,pool=pool) if board_like and shortage>0 else None
+            # True leaf/raw material. This is the canonical path used both by an
+            # individual BO and Combined Material Shortages.
+            m=self.material_requirement(part,required,pool=pool)
+            available=D(m.get("available",0)); shortage=D(m.get("shortage",0))
+            forecast=None
+            if shortage>0:
+                ready=m.get("ready_date")
+                basis=(f"{self.part_label(part)} material ready {ready}" if ready else
+                       f"{self.part_label(part)} has no dated full material coverage")
+                forecast={"ready_now":float(available),"need_after_ready":float(shortage),
+                          "forecast_ready":ready,"basis":basis,"material":[m],
+                          "pipeline":{"pass_sw":0,"failed_rework":0}}
+
         return {"bom_item_id":item.pk,"optional":bool(getattr(item,"optional",False)),"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
                 "required":float(required),"available":float(available),"shortage":float(shortage),"board_like":board_like,
                 "child_builds":[{"id":b.pk,"url":self.build_url(b),"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],"forecast":forecast}
+
+    def has_assembly_cost_line(self, part):
+        """Board BOM convention: an '* Assembly' line marks PCBA manufacture.
+
+        The costing line itself is never material demand, but it is a useful signal
+        that a selected BO output should be planned as a manufactured board rather
+        than as final-product assembly.
+        """
+        return any(self.is_assembly_cost_line(self.subpart(x)) for x in self.bom(part))
+
+    def board_build_output_plan(self, build, part, pool=None, priority=None):
+        """Plan a selected PCBA Build Order from its BOM through board test stages."""
+        qty=max(D(0),D(getattr(build,"quantity",0)))
+        # A selected BO is the production demand itself. Existing finished stock is
+        # not used to erase that demand; however staged WIP belonging to the board
+        # can accelerate the forecast and leaf material is shared by priority.
+        forecast=self.board_forecast(part,qty,[build],pool=pool)
+        unresolved=[] if forecast and forecast.get("forecast_ready") else [self.part_label(part)]
+        ready=day((forecast or {}).get("forecast_ready"))
+        target=day(getattr(build,"target_date",None))
+        status="BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
+        row={"bom_item_id":None,"optional":False,"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
+             "required":float(qty),"available":0.0,"shortage":float(qty),"board_like":True,"child_builds":[],"forecast":forecast,"build_output":True}
+        return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(qty),"target_date":iso(target)},
+                "priority":priority,"requirements":[row],"optional_requirements":[],"selected_optional_quantities":{},
+                "summary":{"material_ready":None,"forecast_ready":iso(ready),"critical_requirement":self.part_label(part),
+                           "critical_display":f"Manufacture and test {self.part_label(part)}","unresolved":unresolved,"status":status,"final_assembly_hours":0.0,"board_build_output":True},
+                "settings":{k.lower():self.setting(k) for k in self.SETTINGS},"assumptions":self.planning_assumptions()}
 
     def coated_build_output_plan(self, build, part, pool=None, priority=None):
         """Plan a BO whose *output* is a conformal-coated PCBA.
@@ -1007,6 +1083,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # source boards.
         if self.conformal_source_part(part):
             return self.coated_build_output_plan(build,part,pool=pool,priority=priority)
+        # A selected PCBA BO (identified by the established '* Assembly' costing
+        # convention) is itself a manufacturing operation. Forecast its BOM,
+        # assembly and VI/Press Fit/BU/EEPROM/SW instead of treating its BOM as a
+        # final-product list followed by generic final assembly.
+        if self.has_assembly_cost_line(part):
+            return self.board_build_output_plan(build,part,pool=pool,priority=priority)
         rows=[]; optional_rows=[]
         build_qty=D(getattr(build,"quantity",0))
         for item in self.bom(part):

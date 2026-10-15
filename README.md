@@ -1,5 +1,11 @@
 # InvenTree Production Planning v3.0.0
 
+## v3.3.0 recursive production planning
+
+v3.3.0 uses one recursive production path for selected PCBA BOs and manufactured subassemblies. When a conformal-coated requirement is short of usable standard source boards, the planner forecasts the missing source boards through their BOM, material readiness, PCBA assembly, VI, Press Fit, Bring-Up, EEPROM and Software Test before adding conformal coating and post-coating tests. Failed VI / rework / quarantine boards do not count as usable source supply.
+
+Combined Material Shortages is fed by the same leaf-material planning path, including direct material shortages from selected PCBA BOs. Multi-build planning remains simulation-only and does not create or change allocations.
+
 Production Planning forecasts when active Build Orders can be completed from finished stock, WIP test stages, child Build Orders, material availability, PO dates, incoming inspection, assembly lead time and final test.
 
 ## V2.4 material-planning rules

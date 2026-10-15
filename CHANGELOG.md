@@ -1,5 +1,16 @@
 ## 3.2.2
 
+## 3.3.0
+
+- Reworked multi-build planning around the recursive production path used by board forecasts.
+- Selected PCBA Build Orders marked by the existing `* Assembly` costing-line convention are now forecast as board production: BOM material readiness -> configured PCBA assembly -> VI -> Press Fit -> Bring-Up -> EEPROM -> Software Test.
+- Conformal-coated requirements now expose the full source-board manufacturing timing instead of collapsing it to `source board forecast ready <date>`.
+- Failed VI / rework / quarantine source-board stock is explicitly excluded from usable conformal-coating source supply and is called out in the readiness path.
+- Direct leaf-material requirements now use the same variant-aware material engine as recursive board BOMs, so they are included in Combined Material Shortages.
+- Combined Material Shortages therefore receives leaf-material demand from both recursively manufactured subassemblies and directly selected PCBA Build Orders.
+- No database migration required.
+
+
 - Reworked the multi-build summary into a true **Combined Material Shortages** view.
 - Aggregates every leaf/raw-material requirement encountered across all selected Build Orders, not only blockers which bubble up into the forecast.
 - Uses the same variant-family grouping and priority-aware virtual stock pool as planning, preventing compatible variant stock from being double-counted.
