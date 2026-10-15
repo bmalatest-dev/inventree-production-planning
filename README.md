@@ -1,6 +1,6 @@
-# InvenTree Production Planning v3.4.0
+# InvenTree Production Planning v3.4.1
 
-## v3.4.0 forecast Gantt
+## v3.4.1 forecast Gantt
 
 Multi-build results now include an inline **Production Gantt (Forecast)**. Each selected BO is shown in planning priority order from the planning date to its forecast completion date, with dated shortage requirements beneath it, target-date markers, and a separate final-assembly phase when that boundary is available from the forecast. Unscheduled requirements remain visibly marked rather than receiving invented dates.
 

@@ -1,4 +1,4 @@
-# Production Planning v3.4.0 Test Plan
+# Production Planning v3.4.1 Test Plan
 
 ## Primary regression: BO-0182 / FR2TSC
 
@@ -33,7 +33,7 @@
 - OK/passed `-BARE` stock must be usable immediately.
 - A credible PO which covers the shortage earlier than new fabrication must be selected instead.
 
-## v3.4.0 Gantt and wording regression
+## v3.4.1 Gantt and wording regression
 
 1. Run the same multi-BO plan used to validate v3.3.1. Confirm a **Production Gantt (Forecast)** appears above Combined Material Shortages.
 2. Confirm every selected BO appears in the same priority order as the planner and its bar ends on the BO forecast-complete date.

@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.4.0 recursive production planning with multi-build forecast Gantt visualization."
+    DESCRIPTION = "V3.4.1 recursive production planning with on-demand single- and multi-build forecast Gantt visualization."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"

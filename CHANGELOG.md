@@ -1,6 +1,12 @@
+## 3.4.1
+- Move Gantt generation to an explicit **Generate Gantt** action after a Production Plan is calculated.
+- Support Gantt generation for a single Build Order.
+- Multi-build plans render all selected Build Orders on the same Gantt in planning-priority order.
+- Gantt remains a forecast visualization only and does not allocate stock or reserve capacity.
+
 # Changelog
 
-## 3.4.0
+## 3.4.1
 - Add an inline **Production Gantt (Forecast)** to multi-build planning.
 - Show selected Build Orders in priority order with forecast-completion bars, shortage-requirement forecast rows, target-date markers, and final-assembly phases where separately known.
 - Gantt dates come from the same shared virtual-stock / recursive production simulation as the combined plan; the chart is planning-only and does not reserve labor or equipment capacity.
