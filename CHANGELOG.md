@@ -86,3 +86,10 @@
 - Apply the same fabrication fallback to undated `-BARE` shortages so PCB material does not remain permanently unscheduled.
 - Ignore past-due open PO dates as forecast supply dates while retaining them in PO detail as stale information.
 - Reset the PCBA assembly setting under a new key with a 10-business-day default, avoiding legacy saved 5-day values.
+
+## 3.5.0
+- Added expandable activity-level rows to the Production Gantt for both single- and multi-build plans.
+- Manufactured requirements now expose dated schedule segments for PCB fabrication/remake, incoming VI, PCBA assembly, Board VI, Press Fit, Bring-Up, EEPROM, Software Test, conformal coating, VI-POST-CC and SW-POST-CC when applicable.
+- Added Expand All / Collapse All controls while keeping the default Gantt compact.
+- Existing WIP begins at its proven production stage rather than displaying already-completed phases.
+- Gantt remains a planning visualization only and does not allocate stock or reserve capacity.

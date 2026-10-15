@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.4.1 recursive production planning with on-demand single- and multi-build forecast Gantt visualization."
+    DESCRIPTION = "V3.5.0 recursive production planning with expandable activity-level single- and multi-build forecast Gantt visualization."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -900,13 +900,45 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if stage < 5: mins += D(self.setting("SW_MIN"))*q
         return mins / D(60)
 
+    def board_test_segments(self, start, stage, qty, prefix=""):
+        """Return dated shop-floor test phases from the proven current stage."""
+        q=D(qty); cursor=day(start); out=[]
+        phases=[
+            (1,"Board VI","BOARD_VI_MIN"),
+            (2,"Press Fit","PRESS_FIT_MIN"),
+            (3,"Bring-Up","BU_MIN"),
+            (4,"EEPROM","EEPROM_MIN"),
+            (5,"Software Test","SW_MIN"),
+        ]
+        for target,label,key in phases:
+            if stage >= target: continue
+            hours=D(self.setting(key))*q/D(60)
+            end=self.add_hours(cursor,hours)
+            out.append({"label":f"{prefix}{label}","start":iso(cursor),"end":iso(end),"kind":"test","hours":float(hours),"quantity":float(q)})
+            cursor=end
+        return out, cursor
+
+    def material_segments(self, blockers):
+        """Expose dated material critical-path work for the expandable Gantt."""
+        out=[]; today=date.today()
+        for b in blockers or []:
+            receipt=day(b.get("replacement_date") or b.get("new_fabrication_date") or b.get("received_date"))
+            ready=day(b.get("ready_date")); label=b.get("label") or b.get("ipn") or b.get("name") or "Material"
+            if b.get("replacement_source")=="new_fabrication" and receipt:
+                out.append({"label":f"{label} — PCB fabrication/remake","start":iso(today),"end":iso(receipt),"kind":"fabrication"})
+            elif b.get("replacement_source")=="open_po" and receipt:
+                out.append({"label":f"{label} — Await incoming PO","start":iso(today),"end":iso(receipt),"kind":"material"})
+            if ready and receipt and ready>=receipt and b.get("inspection_hours"):
+                out.append({"label":f"{label} — Incoming VI","start":iso(receipt),"end":iso(ready),"kind":"inspection","hours":float(D(b.get("inspection_hours")))})
+        return out
+
     def board_forecast(self, part, required_shortage, builds, pool=None):
         state=self.stock_state(part); ex=state["exact"]
         # available_qty already includes Pass SW outputs, so shortage is only what
         # still has to become ready.
         need=max(D(0),D(required_shortage))
         result={"pipeline":{"unstarted_output":float(ex[0]),"pass_vi":float(ex[1]),"pass_press_fit":float(ex[2]),"pass_bu":float(ex[3]),"eeprom_pass":float(ex[4]),"pass_sw":float(ex[5]),"failed_rework":float(state["failed_rework"])},
-                "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[]}
+                "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[],"schedule_segments":[]}
         if need<=0:
             result["forecast_ready"]=iso(date.today()); result["basis"]="Finished / Pass SW stock covers the requirement."; return result
         today=date.today(); candidates=[]
@@ -918,7 +950,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             claimed_staged += qty
             if qty>0:
                 hrs=self.remaining_stage_hours(stage,qty)
-                candidates.append((qty,self.add_hours(today,hrs),f"{label} WIP + {float(hrs):g}h remaining test"))
+                segs, seg_end = self.board_test_segments(today, stage, qty, prefix=f"{label} WIP — ")
+                candidates.append((qty,seg_end,f"{label} WIP + {float(hrs):g}h remaining test",segs))
         # In a multi-build plan, only WIP actually claimed by this priority can
         # reduce the quantity which still has to be assembled.  Using the raw
         # database WIP total here would let a later BO reuse WIP already consumed
@@ -930,8 +963,11 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             if material_ready and not unresolved:
                 assembled=add_business_days(material_ready,self.setting("PCBA_ASSEMBLY_DAYS"))
                 test_hours=self.remaining_stage_hours(0,remaining_unassembled)
-                finish=self.add_hours(assembled,test_hours)
-                candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW"))
+                test_segs, finish = self.board_test_segments(assembled, 0, remaining_unassembled)
+                segs=self.material_segments(blockers)
+                segs.append({"label":"PCBA assembly","start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":self.setting("PCBA_ASSEMBLY_DAYS")})
+                segs.extend(test_segs)
+                candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW",segs))
             elif unresolved:
                 names=[]
                 for blocker in unresolved:
@@ -941,12 +977,14 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 result["basis"]="Material blocker(s) without dated full coverage: " + ", ".join(names)
         candidates.sort(key=lambda x:(x[1] is None,x[1] or date.max))
         remaining=need; chosen=None; basis=[]
-        for qty,when,why in candidates:
+        chosen_segments=[]
+        for candidate in candidates:
+            qty,when,why,segs = candidate
             if not when or qty<=0: continue
-            take=min(remaining,qty); remaining-=take; chosen=when; basis.append(f"{float(take):g} from {why}")
+            take=min(remaining,qty); remaining-=take; chosen=when; basis.append(f"{float(take):g} from {why}"); chosen_segments.extend(segs)
             if remaining<=0: break
         if chosen and remaining<=0:
-            result["forecast_ready"]=iso(chosen); result["basis"]="; ".join(basis)
+            result["forecast_ready"]=iso(chosen); result["basis"]="; ".join(basis); result["schedule_segments"]=chosen_segments
         elif not result["basis"]:
             result["basis"]=f"Only {float(need-remaining):g} of {float(need):g} additional boards can currently be dated; {float(remaining):g} remain unscheduled."
         return result
@@ -1008,6 +1046,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     "basis": f"Conformal-coated variant requires {float(need):g} {self.part_label(source)} board(s); {float(source_need):g} source board(s) cannot yet be dated.",
                     "material": (sf or {}).get("material", []),
                     "pipeline": {"pass_sw": 0, "failed_rework": 0},
+                    "schedule_segments": (sf or {}).get("schedule_segments", []),
                     "conformal_coating": True,
                 }
             source_date = day(sf.get("forecast_ready")) or source_date
@@ -1019,8 +1058,17 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 source_basis.append("source-board BOM has no unresolved leaf-material shortages after shared virtual supply is applied")
 
         coating_done = source_date + timedelta(days=self.setting("CONFORMAL_COATING_DAYS"))
-        post_hours = (D(self.setting("POST_CC_VI_MIN")) + D(self.setting("POST_CC_SW_MIN"))) * need / D(60)
-        ready = self.add_hours(coating_done, post_hours)
+        post_vi_hours = D(self.setting("POST_CC_VI_MIN"))*need/D(60)
+        post_sw_hours = D(self.setting("POST_CC_SW_MIN"))*need/D(60)
+        vi_done=self.add_hours(coating_done,post_vi_hours)
+        ready=self.add_hours(vi_done,post_sw_hours)
+        post_hours = post_vi_hours + post_sw_hours
+        schedule_segments=[]
+        if source_need > 0 and sf:
+            schedule_segments.extend(sf.get("schedule_segments", []))
+        schedule_segments.append({"label":"Conformal coating","start":iso(source_date),"end":iso(coating_done),"kind":"coating","calendar_days":self.setting("CONFORMAL_COATING_DAYS")})
+        schedule_segments.append({"label":"VI-POST-CC","start":iso(coating_done),"end":iso(vi_done),"kind":"test","hours":float(post_vi_hours)})
+        schedule_segments.append({"label":"SW-POST-CC","start":iso(vi_done),"end":iso(ready),"kind":"test","hours":float(post_sw_hours)})
         basis = "; ".join(source_basis)
         basis += f" -> {self.setting('CONFORMAL_COATING_DAYS')} calendar days conformal coating -> Convert to {self.part_label(coated_part)} -> {float(D(self.setting('POST_CC_VI_MIN'))*need/D(60)):g}h VI-POST-CC + {float(D(self.setting('POST_CC_SW_MIN'))*need/D(60)):g}h SW-POST-CC"
         return {
@@ -1029,7 +1077,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "pipeline": {"pass_sw": 0, "failed_rework": 0},
             "conformal_coating": True, "source_part_id": getattr(source, "pk", None),
             "source_ipn": self.ipn(source), "source_label": self.part_label(source), "coating_complete": iso(coating_done),
-            "post_cc_hours": float(post_hours),
+            "post_cc_hours": float(post_hours), "schedule_segments": schedule_segments,
         }
 
     def requirement(self, build, item, optional_total_qty=None, pool=None):

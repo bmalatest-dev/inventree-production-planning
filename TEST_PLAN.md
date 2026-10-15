@@ -42,3 +42,11 @@
 5. For a normal top-level product BO with separately known material-ready and final-ready dates, confirm Final assembly is shown as its own phase.
 6. Re-test TR8DC with Failed VI TR8D-BARE and no credible PO coverage. The blocker must say `PCB fabrication fallback: 28 calendar days -> estimated receipt ...`, followed by incoming VI and the material-ready date. It must not call the fallback an existing PO receipt.
 7. Confirm the Gantt is display-only: calculating or opening it must not create allocations or modify BOs, StockItems or POs.
+
+## v3.5.0 expandable Gantt regression
+1. Calculate BO-0182 and generate its Gantt. Confirm each manufactured requirement with a forecast path has an expand arrow.
+2. Expand TR8DC. Confirm the detailed rows include the 28-calendar-day TR8D-BARE fabrication/remake fallback, incoming VI, PCBA assembly, Board VI, Press Fit, Bring-Up, EEPROM, Software Test, conformal coating, VI-POST-CC and SW-POST-CC, with dates consistent with the Production Plan.
+3. Expand a requirement supplied from existing WIP. Confirm the chart starts at the remaining stage and does not invent completed fabrication/assembly/test phases.
+4. Confirm Expand All reveals all available activity rows and Collapse All returns to the compact view.
+5. Run a multi-build plan and generate the Gantt. Confirm all selected BOs remain on one chart and their expandable activity rows reflect the same priority-aware simulation.
+6. Confirm Generate/Hide Gantt and plan recalculation still work and no InvenTree allocations or Build Orders are changed.
