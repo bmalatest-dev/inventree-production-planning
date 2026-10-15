@@ -35,6 +35,6 @@ When an existing child Build Order is available, Production Planning now uses In
 Allocation and readiness are separate concepts. For an existing child BO, native BuildLine allocation state remains authoritative for committed quantity, but the allocated StockItem status determines whether that material is actually usable. Pending material schedules incoming inspection. Failed VI material cannot satisfy the build and is replaced using the earlier of credible open-PO coverage or the configured replacement fabrication lead time (default 28 calendar days). Replacement material must still pass incoming inspection before assembly begins.
 
 
-## V0.2.8 conformal coating planning
+## V0.2.9 conformal coating planning
 
 A conformal-coated PCBA is recognized when it is an InvenTree variant of a standard PCBA and either follows the documented trailing-`C` IPN convention (for example `TR8R` -> `TR8RC`) or has `Conformal Coated` in its Part name. When coated stock is short, Production Planning uses ready standard boards first, forecasts any missing standard boards through the existing board-planning logic, then adds 14 calendar days for conformal coating and the configured post-CC VI and software-test time. Defaults are 90 minutes/board for `VI-POST-CC` and 120 minutes/board for `SW-POST-CC`.

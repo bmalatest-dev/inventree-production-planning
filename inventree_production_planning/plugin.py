@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.8 production forecast with corrected conformal-coated variant resolution."
+    DESCRIPTION = "V2.9 production forecast with location-neutral stock availability and active-allocation handling."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -213,7 +213,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
 
         BO output items are WIP regardless of when they were created. They become
         usable for a parent BO only at Pass SW. Non-output stock follows normal
-        InvenTree availability semantics.
+        InvenTree status semantics. Stock location is deliberately ignored here:
+        an OK item in an external location is still usable inventory.
         """
         custom = self.custom_statuses()
         custom_logical = self.custom_logical_statuses()
@@ -377,12 +378,37 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "po_references": po.get("refs", []), "po_lines": po.get("lines", [])}
 
     def globally_allocated_qty(self, part):
-        """Return stock quantity already committed to any build order."""
+        """Return stock quantity committed to active build orders.
+
+        V2.8 counted every historical BuildItem allocation, including allocations
+        retained on completed / cancelled builds.  That could make physically
+        usable stock appear unavailable.  Location is intentionally *not* part of
+        this calculation: usable stock at an external assembly house is still
+        valid inventory for planning.
+        """
         try:
-            qs = BuildItem.objects.filter(stock_item__part=part)
+            qs = BuildItem.objects.filter(stock_item__part=part).select_related("build")
             total = D(0)
-            for obj in qs.only("quantity"):
-                total += D(getattr(obj, "quantity", 0))
+            for obj in qs:
+                build = getattr(obj, "build", None)
+                if not build:
+                    continue
+                # Prefer InvenTree's status helpers when available.  A completed
+                # build must not reserve stock forever.  Production (20) remains
+                # active; conservative fallback also keeps pre-production states.
+                active = True
+                try:
+                    from build.status_codes import BuildStatusGroups
+                    active_values = getattr(BuildStatusGroups, "ACTIVE", None)
+                    if active_values is not None:
+                        active = getattr(build, "status", None) in active_values
+                    else:
+                        raise AttributeError
+                except Exception:
+                    status = getattr(build, "status", None)
+                    active = status is None or int(status) < 30
+                if active:
+                    total += D(getattr(obj, "quantity", 0))
             return total
         except Exception:
             return D(0)
@@ -822,7 +848,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time.","V2.6: -BARE shortages use a 28-calendar-day fabrication fallback when no credible future PO fully covers the shortage; past-due PO ETAs are informational only; PCBA assembly defaults to 10 business days.","V2.7: conformal-coated PCBA variants use the InvenTree variant relationship plus the trailing-C convention or Conformal Coated name.","V2.8: coated/source identifiers use IPN when present and fall back to Part Name when IPN is blank (e.g. TR8MC -> TR8M). Coating remains 14 calendar days, followed by VI-POST-CC at 1.5h/board and SW-POST-CC at 2.0h/board; these durations are configurable settings."]}
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time.","V2.6: -BARE shortages use a 28-calendar-day fabrication fallback when no credible future PO fully covers the shortage; past-due PO ETAs are informational only; PCBA assembly defaults to 10 business days.","V2.7: conformal-coated PCBA variants use the InvenTree variant relationship plus the trailing-C convention or Conformal Coated name.","V2.8: coated/source identifiers use IPN when present and fall back to Part Name when IPN is blank (e.g. TR8MC -> TR8M). Coating remains 14 calendar days, followed by VI-POST-CC at 1.5h/board and SW-POST-CC at 2.0h/board; these durations are configurable settings.","V2.9: usable stock counts regardless of storage location, including External locations. Existing child BO BuildLines remain authoritative; only active build allocations reserve otherwise-available stock, so historical completed/cancelled allocations do not create false shortages."]}
 
     def build_api(self, request, build_id, **kwargs):
         try:

@@ -67,3 +67,12 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 5. Verify a variant relation with neither trailing-C convention nor `Conformal Coated` in the Part name is not automatically treated as coated.
 6. Verify existing ready TR8RC stock satisfies the requirement immediately.
 7. Expand Planning Assumptions and verify the 14-day coating, 1.5h VI-POST-CC, and 2.0h SW-POST-CC defaults are stated.
+
+
+## V0.2.9 location-neutral / child-BO allocation regression
+
+1. Put otherwise usable component stock in an External location and confirm it satisfies the requirement.
+2. Confirm Pending, Failed VI, Quarantine and damaged stock remain governed by status and do not become usable merely because of location.
+3. Forecast a coated variant whose source board has an existing production BO; confirm the existing BO BuildLines / allocations are used before generic BOM shortage recursion.
+4. Confirm BuildItem allocations belonging only to completed/cancelled builds do not reduce current available stock.
+5. Re-test BO-0182 TR8RC: the TR8R source forecast should reduce to genuine uncovered material (expected BTL-0026SMG-1-PV / its PO) rather than unrelated false blockers.

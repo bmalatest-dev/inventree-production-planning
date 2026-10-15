@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.9 - 2026-10-15
+
+- Treat usable stock as location-neutral for Production Planning; stock in External / assembly-house locations can satisfy requirements.
+- Continue to use live StockItem status to determine whether material is usable, pending inspection, Failed VI, quarantined, or otherwise blocked.
+- Preserve existing child BuildLines / allocations as the authoritative material state when forecasting additional source PCBAs.
+- Count only active-build allocations when subtracting globally committed stock; historical completed/cancelled BuildItem records no longer create false shortages.
+- Preserve v0.2.8 conformal-coated variant forecasting and all timing assumptions.
+- No database migration.
+
 ## 0.2.8 - 2026-10-15
 
 - Fix conformal-coated variant recognition when board identifiers are stored in Part Name and IPN is blank.
