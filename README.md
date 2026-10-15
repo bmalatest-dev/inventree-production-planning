@@ -52,3 +52,8 @@ V3.0 adds a planning-only multi-Build-Order view inside the Production Plan pane
 The shared planning pool covers ordinary component stock (using InvenTree variant-aware availability), exact finished-board stock, WIP test-stage quantities, and dated open-PO supply. These are virtual claims only: Production Planning does not create, modify, or commit InvenTree allocations. Reordering the selected BOs and recalculating is therefore safe and can be used to compare production priorities.
 
 The combined result shows the overall forecast completion date, unresolved BO count, shared constraints, and each BO forecast in priority order. The existing single-BO Production Plan remains available and unchanged.
+
+
+## v3.1 multi-build detail
+
+Multi-build planning now pauses for optional BOM quantities when any selected BO contains optional top-level lines. Each optional quantity is scoped to its BO and a quantity of 0 excludes it. The combined result includes expandable per-BO forecasts plus combined material/resource detail so priority-driven shortages can be traced to the affected BO and BOM path. The planner remains simulation-only and never allocates stock.

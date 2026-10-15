@@ -1,3 +1,14 @@
+## 3.1.0 - 2026-10-15
+
+- Add an explicit optional-BOM selection step before a combined production plan is calculated.
+- Optional quantities are set independently for each selected Build Order; 0 excludes the line.
+- Pass optional selections into each priority-ordered BO forecast instead of silently assuming zero.
+- Add combined material/resource detail showing total demand, unresolved quantity, open-PO quantity, affected BOs, priority, available quantity seen by that priority, shortage, path and material-ready date.
+- Make each Build Forecast expandable and show its full top-level requirements, readiness paths and material blockers rather than only a summary date/status.
+- Tag virtual stock/WIP/PO claims with Build Order and priority for traceability.
+- Planning remains simulation-only; no InvenTree allocations or Build Orders are changed.
+- No database migration.
+
 # Changelog
 
 ## 3.0.0 - 2026-10-15

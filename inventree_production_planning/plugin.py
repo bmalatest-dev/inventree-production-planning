@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3 multi-build production planning with priority-aware shared virtual supply."
+    DESCRIPTION = "V3.1 detailed multi-build planning with optional BOM selection and priority-aware shared virtual supply."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -971,7 +971,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def builds_api(self, request, **kwargs):
         return JsonResponse({"plugin_version":self.VERSION,"builds":self.candidate_builds()})
 
-    def multi_plan(self, build_ids):
+    def multi_plan(self, build_ids, optional_by_build=None):
         ids=[]
         for x in build_ids:
             try:
@@ -980,15 +980,22 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             except Exception: pass
         if not ids:
             raise ValueError("Select at least one Build Order")
+        optional_by_build=optional_by_build or {}
         pool=self.new_pool(); plans=[]
         for priority,bid in enumerate(ids,1):
-            plans.append(self.plan(bid,pool=pool,priority=priority))
+            claim_start=len(pool["claims"])
+            plan=self.plan(bid,optional_quantities=optional_by_build.get(bid,{}),pool=pool,priority=priority)
+            for claim in pool["claims"][claim_start:]:
+                claim["build_id"]=bid
+                claim["build_ref"]=plan["build"]["reference"]
+                claim["priority"]=priority
+            plans.append(plan)
         dated=[day((p.get("summary") or {}).get("forecast_ready")) for p in plans]
         unresolved=[p for p in plans if not (p.get("summary") or {}).get("forecast_ready")]
         complete=max([d for d in dated if d],default=None) if not unresolved else None
-        constraints={}
+        constraints={}; resources={}
         for p in plans:
-            bref=p["build"]["reference"]
+            bref=p["build"]["reference"]; priority=p.get("priority")
             for row in p.get("requirements",[]):
                 for m in ((row.get("forecast") or {}).get("material") or []):
                     if D(m.get("shortage",0))<=0: continue
@@ -997,13 +1004,28 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     if bref not in c["builds"]: c["builds"].append(bref)
                     rd=day(m.get("ready_date"))
                     if rd and (not c["max_ready"] or rd>c["max_ready"]): c["max_ready"]=rd
+                    r=resources.setdefault(key,{"part_id":m.get("part_id"),"label":m.get("label") or m.get("ipn") or m.get("name"),"part_url":m.get("part_url"),"total_required":0.0,"total_shortage":0.0,"open_po_qty":0.0,"builds":[]})
+                    r["total_required"]+=float(D(m.get("required",0)))
+                    r["total_shortage"]+=float(D(m.get("shortage",0)))
+                    r["open_po_qty"]=max(r["open_po_qty"],float(D(m.get("open_po_qty",0))))
+                    r["builds"].append({"build":bref,"priority":priority,"required":float(D(m.get("required",0))),"available":float(D(m.get("available",0))),"shortage":float(D(m.get("shortage",0))),"ready_date":m.get("ready_date"),"path":m.get("path"),"po_lines":m.get("po_lines") or []})
         for c in constraints.values(): c["max_ready"]=iso(c["max_ready"])
-        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(constraints)},"constraints":list(constraints.values()),"claims":pool["claims"]}
+        return {"plugin_version":self.VERSION,"mode":"multi_build_planning","simulation_only":True,"build_order":ids,"plans":plans,"summary":{"build_count":len(plans),"forecast_complete":iso(complete),"unresolved_builds":len(unresolved),"constraint_count":len(constraints)},"constraints":list(constraints.values()),"resources":list(resources.values()),"claims":pool["claims"]}
 
     def multi_api(self, request, **kwargs):
         try:
             raw=request.GET.get("builds","")
-            return JsonResponse(self.multi_plan([x for x in raw.split(",") if x.strip()]))
+            optional_by_build={}
+            for token in (request.GET.get("optional","") or "").split(","):
+                token=token.strip()
+                if not token: continue
+                bits=token.split(":")
+                if len(bits)!=3: continue
+                try:
+                    bid,bom_id,qty=int(bits[0]),int(bits[1]),max(D(0),D(bits[2]))
+                    optional_by_build.setdefault(bid,{})[bom_id]=qty
+                except Exception: pass
+            return JsonResponse(self.multi_plan([x for x in raw.split(",") if x.strip()],optional_by_build=optional_by_build))
         except Build.DoesNotExist:
             return JsonResponse({"error":"One or more Build Orders were not found"},status=404)
         except Exception as exc:
