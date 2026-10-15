@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.6.0 production planning with adjustable global and per-board scenario timings plus expandable forecast Gantt."
+    DESCRIPTION = "V3.6.1 production planning with adjustable global and per-board scenario timings plus expandable forecast Gantt."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"

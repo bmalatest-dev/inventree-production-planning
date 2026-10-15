@@ -60,3 +60,12 @@
 5. Reset Overrides and confirm the original configured-default forecast returns.
 6. Repeat in multi-build planning and confirm the same board override applies wherever that board is used across selected BOs.
 7. Confirm no stock allocations, BO data, or persistent plugin settings are changed.
+
+
+## v3.6.1 board-specific timing editor UI
+1. Open Adjust Planning Times and confirm **This plan — all boards** is immediately visible.
+2. Confirm each board-specific section is collapsed by default.
+3. Expand one board, enter one or more overrides, collapse it, and confirm the values persist and the row shows the override count.
+4. Re-open the board and confirm the entered values remain.
+5. Recalculate and confirm the timing override still affects only the intended board.
+6. Reset Overrides and confirm counts/values clear.

@@ -1,3 +1,10 @@
+# v3.6.1
+
+- Board-specific timing overrides are now collapsed by default for a cleaner planning-times editor.
+- Each board can be expanded independently; collapsed rows show the number of active overrides.
+- Plan-wide **This plan — all boards** timing overrides remain visible as before.
+- No planning calculation changes and no migration required.
+
 # v3.6.0
 
 - Added scenario-only **Adjust Planning Times** editor.
