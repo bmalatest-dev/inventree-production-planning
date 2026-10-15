@@ -1,3 +1,10 @@
+## 3.2.1 - 2026-10-15
+
+- In multi-build Build Forecast detail, show only requirements with a remaining shortage (`Short > 0`); satisfied BOM lines remain part of the calculation but are hidden from the report.
+- Enforce the existing `* Assembly` costing-line exclusion before planning and optional-BOM handling so assembly costing entries cannot become virtual material demand, blockers, or unresolved requirements.
+- Keep combined material/resource detail limited to unresolved material constraints.
+- No database migration.
+
 ## 3.2.0 - 2026-10-15
 
 - Treat a selected Build Order whose output is a conformal-coated PCBA as production demand for the full BO quantity, rather than as a generic top-level BOM/final-assembly plan.

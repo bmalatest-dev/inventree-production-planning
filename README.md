@@ -64,3 +64,8 @@ Multi-build planning now pauses for optional BOM quantities when any selected BO
 When a selected BO produces a conformal-coated PCBA, the planner treats the BO quantity as new production demand. Higher-priority requirements first claim ready standard source boards. A later coated-board BO then sees only the remaining source boards and must forecast any missing source PCBAs through assembly and test using the remaining shared component / WIP / PO pools. This is simulation-only and does not create allocations.
 
 The UI now presents a concise **Planning Assumptions** section grouped by timing, inventory/material rules, and planning behavior rather than listing historical version changes.
+
+
+### Multi-build report detail
+
+Per-BO material detail in the combined planner displays only requirements with a remaining shortage. Satisfied BOM lines are still evaluated internally but are hidden from the report. BOM entries ending in ` Assembly` are costing-only and are excluded from material planning entirely.

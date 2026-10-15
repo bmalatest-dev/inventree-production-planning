@@ -901,7 +901,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
 
     def requirement(self, build, item, optional_total_qty=None, pool=None):
         part=self.subpart(item)
-        if not part: return None
+        if not part or self.is_assembly_cost_line(part): return None
         if optional_total_qty is not None:
             required=max(D(0),D(optional_total_qty))
         else:
@@ -986,8 +986,13 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         rows=[]; optional_rows=[]
         build_qty=D(getattr(build,"quantity",0))
         for item in self.bom(part):
+            sub=self.subpart(item)
+            # Costing-only assembly lines are not physical material demand.
+            # Exclude them before optional handling so they cannot enter the
+            # shared virtual pool, shortage counts, or combined BO detail.
+            if self.is_assembly_cost_line(sub):
+                continue
             if bool(getattr(item,"optional",False)):
-                sub=self.subpart(item)
                 per_unit=D(getattr(item,"quantity",0))
                 max_total=per_unit*build_qty
                 selected=min(max_total,optional_quantities.get(item.pk,D(0)))
