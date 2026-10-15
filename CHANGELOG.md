@@ -1,52 +1,11 @@
-## 3.2.2
-
-## 3.3.0
-
-- Reworked multi-build planning around the recursive production path used by board forecasts.
-- Selected PCBA Build Orders marked by the existing `* Assembly` costing-line convention are now forecast as board production: BOM material readiness -> configured PCBA assembly -> VI -> Press Fit -> Bring-Up -> EEPROM -> Software Test.
-- Conformal-coated requirements now expose the full source-board manufacturing timing instead of collapsing it to `source board forecast ready <date>`.
-- Failed VI / rework / quarantine source-board stock is explicitly excluded from usable conformal-coating source supply and is called out in the readiness path.
-- Direct leaf-material requirements now use the same variant-aware material engine as recursive board BOMs, so they are included in Combined Material Shortages.
-- Combined Material Shortages therefore receives leaf-material demand from both recursively manufactured subassemblies and directly selected PCBA Build Orders.
-- No database migration required.
-
-
-- Reworked the multi-build summary into a true **Combined Material Shortages** view.
-- Aggregates every leaf/raw-material requirement encountered across all selected Build Orders, not only blockers which bubble up into the forecast.
-- Uses the same variant-family grouping and priority-aware virtual stock pool as planning, preventing compatible variant stock from being double-counted.
-- Shows combined total required, stock available to the selected plan, current-stock shortage, open PO supply, and per-priority BO demand.
-- Fully covered material is still evaluated and consumes virtual supply, but is omitted from the shortage report.
-- No migration required.
-
-## 3.2.1 - 2026-10-15
-
-- In multi-build Build Forecast detail, show only requirements with a remaining shortage (`Short > 0`); satisfied BOM lines remain part of the calculation but are hidden from the report.
-- Enforce the existing `* Assembly` costing-line exclusion before planning and optional-BOM handling so assembly costing entries cannot become virtual material demand, blockers, or unresolved requirements.
-- Keep combined material/resource detail limited to unresolved material constraints.
-- No database migration.
-
-## 3.2.0 - 2026-10-15
-
-- Treat a selected Build Order whose output is a conformal-coated PCBA as production demand for the full BO quantity, rather than as a generic top-level BOM/final-assembly plan.
-- Consume standard source-PCBA stock in shared priority order. Source boards already promised to a higher-priority coated requirement cannot be reused by a later BO.
-- When source PCBAs are exhausted, forecast manufacture of the missing standard boards from the remaining shared WIP, component stock / variants and dated PO supply before coating.
-- Fix staged-WIP sharing so later BOs cannot reduce their assembly quantity using WIP already claimed by a higher-priority BO.
-- Make successful source-board material coverage explicit in the readiness path when all required BOM material is covered by remaining virtual supply.
-- Replace version-history-style notes with a clean Planning Assumptions section grouped into Time Related Assumptions, Inventory & Material Assumptions, and Planning Behavior.
-- No database migration.
-
-## 3.1.0 - 2026-10-15
-
-- Add an explicit optional-BOM selection step before a combined production plan is calculated.
-- Optional quantities are set independently for each selected Build Order; 0 excludes the line.
-- Pass optional selections into each priority-ordered BO forecast instead of silently assuming zero.
-- Add combined material/resource detail showing total demand, unresolved quantity, open-PO quantity, affected BOs, priority, available quantity seen by that priority, shortage, path and material-ready date.
-- Make each Build Forecast expandable and show its full top-level requirements, readiness paths and material blockers rather than only a summary date/status.
-- Tag virtual stock/WIP/PO claims with Build Order and priority for traceability.
-- Planning remains simulation-only; no InvenTree allocations or Build Orders are changed.
-- No database migration.
-
 # Changelog
+
+## 3.3.1
+- Treat `-BARE` PCB stock by live VI status instead of generic `Part.available_stock`.
+- `Failed VI`, rework, quarantine and damaged bare PCBs never satisfy material demand.
+- `Pending` bare PCBs are physically present but require configured incoming VI before becoming ready.
+- When passing bare-PCB stock is insufficient, use credible dated PO coverage or the configured 28-calendar-day fabrication/remake fallback, whichever provides the earlier viable replacement path.
+- Preserve recursive source-board production, shared multi-build priority pools and consolidated leaf-material shortages from v3.3.0.
 
 ## 3.0.0 - 2026-10-15
 

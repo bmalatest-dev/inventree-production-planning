@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.3.0 recursive production planning with explicit source-board timing and consolidated leaf-material shortages."
+    DESCRIPTION = "V3.3.1 recursive production planning with status-aware bare-PCB replacement forecasting."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -468,18 +468,98 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         ids = sorted(int(x) for x in ids if x is not None)
         return "variant-family:" + ",".join(str(x) for x in ids)
 
+    def material_family_parts(self, part):
+        """Return the root part and compatible variants once each."""
+        root = part
+        seen = set()
+        while getattr(root, "variant_of", None) and getattr(root, "pk", None) not in seen:
+            seen.add(getattr(root, "pk", None))
+            root = root.variant_of
+        parts = [root]
+        try:
+            parts.extend(list(root.get_all_variants()))
+        except Exception:
+            pass
+        if part not in parts:
+            parts.append(part)
+        out = []
+        ids = set()
+        for candidate in parts:
+            pk = getattr(candidate, "pk", None)
+            if pk is not None and pk not in ids:
+                ids.add(pk); out.append(candidate)
+        return out
+
+    def bare_material_stock_state(self, part):
+        """Classify -BARE inventory by live VI status across compatible variants.
+
+        InvenTree ``available_stock`` can legitimately include custom statuses whose
+        logical status is available. For bare PCBs that is not sufficient: Pending
+        must be inspected before use and Failed VI / rework / quarantine / damaged
+        stock is known-bad material and can never satisfy production demand.
+        """
+        custom = self.custom_statuses()
+        custom_logical = self.custom_logical_statuses()
+        ready = D(0); pending = D(0); failed = D(0); blocked = D(0)
+        allocated = D(0)
+        for family_part in self.material_family_parts(part):
+            allocated += self.globally_allocated_qty(family_part)
+            for item in self.stock(family_part):
+                qty = D(getattr(item, "quantity", 0))
+                key = self.norm(self.status_label(item, custom))
+                if "failedvi" in key or ("fail" in key and "vi" in key):
+                    failed += qty
+                elif "pending" in key:
+                    pending += qty
+                elif "fail" in key or "rework" in key or "quarantine" in key or "damage" in key:
+                    blocked += qty
+                elif self.logical_available(item, custom_logical):
+                    ready += qty
+                else:
+                    blocked += qty
+        # Active allocations are already committed elsewhere. Conservatively remove
+        # them from immediately-ready supply; BuildLine-specific allocations are
+        # handled separately by board_bom_material_ready().
+        ready = max(D(0), ready - allocated)
+        return {"ready":ready, "pending":pending, "failed_vi":failed, "blocked":blocked}
+
     def claim_material_stock(self, part, need, pool=None):
-        """Claim ordinary material from a shared virtual variant-aware stock pool."""
+        """Claim ordinary material from a shared virtual variant-aware stock pool.
+
+        -BARE PCBs deliberately bypass Part.available_stock and use live VI status.
+        """
         need = max(D(0), D(need))
+        if self.is_bare_part(part):
+            state = self.bare_material_stock_state(part)
+            available = state["ready"]
+        else:
+            available = self.material_available_qty(part)
         if pool is None:
-            return min(need, self.material_available_qty(part))
+            return min(need, available)
         key = self.material_family_key(part)
         if key not in pool["material"]:
-            pool["material"][key] = self.material_available_qty(part)
+            pool["material"][key] = available
         take = min(need, pool["material"][key])
         pool["material"][key] -= take
         if take > 0:
             pool["claims"].append({"type":"stock","part_id":part.pk,"label":self.part_label(part),"quantity":float(take),"pool_key":key})
+        return take
+
+    def claim_pending_bare_stock(self, part, need, pool=None):
+        """Claim physically received -BARE stock which still requires incoming VI."""
+        need = max(D(0), D(need))
+        if need <= 0 or not self.is_bare_part(part):
+            return D(0)
+        available = self.bare_material_stock_state(part)["pending"]
+        if pool is None:
+            return min(need, available)
+        key = "pending:" + self.material_family_key(part)
+        if key not in pool["material"]:
+            pool["material"][key] = available
+        take = min(need, pool["material"][key])
+        pool["material"][key] -= take
+        if take > 0:
+            pool["claims"].append({"type":"pending_stock","part_id":part.pk,"label":self.part_label(part),"quantity":float(take),"pool_key":key})
         return take
 
     def claim_exact_stock(self, part, need, pool=None):
@@ -613,34 +693,63 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         return D(0), ""
 
     def material_requirement(self, part, need, pool=None):
-        """Forecast when purchased/raw material is received + inspected.
+        """Forecast when purchased/raw material is usable for production.
 
-        V2.6 gives -BARE shortages a deterministic replacement path. If Failed VI
-        stock exists, or no credible dated PO fully covers the BARE shortage, use
-        the earlier of credible PO coverage and the configured 28-calendar-day
-        fabrication fallback. Past-due PO dates remain informational only.
+        For -BARE PCBs, live stock status is authoritative: OK/passed stock is ready,
+        Pending stock is physically present but must complete incoming VI, and Failed
+        VI/rework/quarantine/damaged stock is excluded. A remaining -BARE shortage
+        uses credible dated PO coverage when it beats the configured fabrication
+        fallback; otherwise a new 28-calendar-day PCB fabrication/remake is forecast.
         """
+        need = max(D(0), D(need))
         available = self.claim_material_stock(part, need, pool=pool)
-        shortage = max(D(0), D(need) - available)
+        remaining = max(D(0), need - available)
+
+        pending = D(0)
+        failed_vi = D(0)
+        blocked = D(0)
+        if self.is_bare_part(part):
+            state = self.bare_material_stock_state(part)
+            failed_vi = state["failed_vi"]
+            blocked = state["blocked"]
+            pending = self.claim_pending_bare_stock(part, remaining, pool=pool)
+            remaining = max(D(0), remaining - pending)
+
+        shortage = remaining
         po = self.po_coverage(part, shortage, pool=pool, reserve=True) if shortage > 0 else {"open":D(0),"earliest":None,"full":None,"refs":[],"lines":[]}
-        failed_vi = self.failed_vi_stock_qty(part) if shortage > 0 else D(0)
 
         replacement = None
-        if shortage > 0 and self.is_bare_part(part) and (failed_vi > 0 or not po.get("full")):
+        incoming_received = None
+        if shortage > 0 and self.is_bare_part(part):
+            # Failed VI means the physical boards are known bad. They never become
+            # ready through another inspection; replacement supply is required.
             replacement = self.failed_vi_replacement(part, shortage, pool=pool, po=po)
-            received_date = day(replacement.get("replacement_date"))
-        else:
-            received_date = date.today() if shortage <= 0 else po.get("full")
+            incoming_received = day(replacement.get("replacement_date"))
+        elif shortage > 0:
+            incoming_received = po.get("full")
 
-        inspection_qty = shortage if shortage > 0 else D(0)
-        hours, inspection = self.inspection_hours(part, inspection_qty)
-        ready = self.add_hours(received_date, hours) if received_date else None
+        # Pending boards can be inspected starting now. Replacement / PO boards can
+        # only be inspected after receipt. Overall material readiness is the later of
+        # those paths because all required quantity must be usable.
+        ready_dates = []
+        pending_hours = D(0)
+        if pending > 0:
+            pending_hours, _ = self.inspection_hours(part, pending)
+            ready_dates.append(self.add_hours(date.today(), pending_hours))
+        incoming_hours = D(0)
+        inspection = ""
+        if shortage > 0 and incoming_received:
+            incoming_hours, inspection = self.inspection_hours(part, shortage)
+            ready_dates.append(self.add_hours(incoming_received, incoming_hours))
+        ready = max(ready_dates) if ready_dates else (date.today() if shortage <= 0 and pending <= 0 else None)
+        total_inspection_hours = pending_hours + incoming_hours
+
         result = {"part_id":getattr(part,"pk",None),"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
-                "required":float(D(need)),"available":float(available),"shortage":float(shortage),
-                "incoming_qty":float(shortage if replacement else min(shortage, D(po.get("open",0)))),"received_date":iso(received_date),
-                "inspection_hours":float(hours),"inspection":inspection,"ready_date":iso(ready),
+                "required":float(need),"available":float(available),"pending_qty":float(pending),"shortage":float(shortage),
+                "incoming_qty":float(shortage),"received_date":iso(incoming_received),
+                "inspection_hours":float(total_inspection_hours),"inspection":inspection or ("-BARE VI" if pending > 0 and self.is_bare_part(part) else ""),"ready_date":iso(ready),
                 "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[]),
-                "failed_vi_qty":float(failed_vi)}
+                "failed_vi_qty":float(failed_vi),"blocked_qty":float(blocked)}
         if replacement:
             result.update({
                 "constraint":"failed_vi_replacement" if failed_vi > 0 else "bare_fabrication_fallback",
@@ -650,28 +759,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "replacement_lead_days":replacement.get("replacement_lead_days"),
             })
 
-        # Multi-build reporting needs the complete material-demand picture, not
-        # only blockers which bubble up into a forecast. Record every leaf/raw
-        # material requirement here, including requirements fully covered by
-        # virtual stock. The shared pool has already applied build priority, so
-        # summing these observations produces true combined demand while the
-        # per-build rows show where the shortage lands after higher priorities.
         if pool is not None:
             current = pool.get("current_build") or {}
             pool.setdefault("material_demand", []).append({
-                "family_key": self.material_family_key(part),
-                "part_id": getattr(part, "pk", None),
-                "part_url": self.part_url(part),
-                "label": self.part_label(part),
-                "build_id": current.get("id"),
-                "build": current.get("reference"),
-                "priority": current.get("priority"),
-                "required": float(D(need)),
-                "available": float(available),
-                "shortage": float(shortage),
-                "open_po_qty": float(D(po.get("open", 0))),
-                "ready_date": result.get("ready_date"),
-                "po_lines": result.get("po_lines") or [],
+                "family_key": self.material_family_key(part), "part_id":getattr(part,"pk",None),
+                "part_url":self.part_url(part), "label":self.part_label(part),
+                "build_id":current.get("id"), "build":current.get("reference"), "priority":current.get("priority"),
+                "required":float(need), "available":float(available + pending), "shortage":float(shortage),
+                "open_po_qty":float(D(po.get("open",0))), "ready_date":result.get("ready_date"),
+                "po_lines":result.get("po_lines") or [],
             })
         return result
 

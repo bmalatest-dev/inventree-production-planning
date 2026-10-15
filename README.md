@@ -1,6 +1,8 @@
 # InvenTree Production Planning v3.0.0
 
-## v3.3.0 recursive production planning
+## v3.3.1 status-aware bare-PCB planning
+
+v3.3.1 keeps the recursive production path from v3.3.0 and adds live `-BARE` PCB status handling. Failed VI boards are known-bad and excluded; Pending boards require incoming VI; shortages use credible PO coverage or the configured fabrication/remake fallback.
 
 v3.3.0 uses one recursive production path for selected PCBA BOs and manufactured subassemblies. When a conformal-coated requirement is short of usable standard source boards, the planner forecasts the missing source boards through their BOM, material readiness, PCBA assembly, VI, Press Fit, Bring-Up, EEPROM and Software Test before adding conformal coating and post-coating tests. Failed VI / rework / quarantine boards do not count as usable source supply.
 

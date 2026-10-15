@@ -1,4 +1,4 @@
-# Production Planning v3.3.0 Test Plan
+# Production Planning v3.3.1 Test Plan
 
 ## Primary regression: BO-0182 / FR2TSC
 
@@ -24,3 +24,11 @@
 - Pass SW is board-ready; merely creating an incomplete output is not evidence of assembly completion.
 - Failed VI / rework / quarantine stock is unavailable for production or conformal conversion.
 - Optional BOM selection behavior remains unchanged.
+
+
+## v3.3.1 bare-PCB status regression
+- TR8D-BARE: with physical stock present but all stock marked Failed VI, verify usable availability is zero.
+- With no credible future PO fully covering TR8D-BARE, verify the planner uses the 28-calendar-day PCB fabrication/remake fallback, then incoming VI, then 10 business days PCBA assembly and board tests.
+- Pending `-BARE` stock must schedule incoming VI rather than fabrication.
+- OK/passed `-BARE` stock must be usable immediately.
+- A credible PO which covers the shortage earlier than new fabrication must be selected instead.
