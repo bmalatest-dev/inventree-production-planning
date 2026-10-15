@@ -57,7 +57,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V2.6 production forecast with failed-VI PCB replacement fallback and corrected assembly timing."
+    DESCRIPTION = "V2.7 production forecast with conformal-coated PCBA conversion planning."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -74,6 +74,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         "SW_MIN": {"name": _("Software Test minutes per board"), "default": 120, "validator": int},
         "FINAL_ASSEMBLY_MIN": {"name": _("Final assembly minutes per finished unit"), "default": 240, "validator": int},
         "FAILED_VI_REPLACEMENT_DAYS": {"name": _("Failed VI replacement fabrication lead time (calendar days)"), "default": 28, "validator": int},
+        "CONFORMAL_COATING_DAYS": {"name": _("Conformal coating lead time (calendar days)"), "default": 14, "validator": int},
+        "POST_CC_VI_MIN": {"name": _("Post-conformal-coating VI minutes per board"), "default": 90, "validator": int},
+        "POST_CC_SW_MIN": {"name": _("Post-conformal-coating software test minutes per board"), "default": 120, "validator": int},
     }
 
     STATUS_ALIASES = {
@@ -686,6 +689,73 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             result["basis"]=f"Only {float(need-remaining):g} of {float(need):g} additional boards can currently be dated; {float(remaining):g} remain unscheduled."
         return result
 
+
+    def conformal_source_part(self, part):
+        """Return the standard PCBA which can be converted into a coated variant.
+
+        Per Vices represents conformal-coated PCBAs as variants of the standard
+        PCBA.  Recognition intentionally requires the InvenTree variant relation
+        plus coating identity from either the documented trailing-C IPN convention
+        (TR8R -> TR8RC) or "Conformal Coated" in the Part name.
+        """
+        if not part:
+            return None
+        source = getattr(part, "variant_of", None)
+        if not source:
+            return None
+        coated_ipn = self.ipn(part).strip()
+        source_ipn = self.ipn(source).strip()
+        name = str(getattr(part, "name", "") or "").lower()
+        by_name = "conformal coated" in name or "conformal-coated" in name
+        by_ipn = bool(coated_ipn and source_ipn and coated_ipn.lower() == (source_ipn + "C").lower())
+        return source if (by_name or by_ipn) else None
+
+    def conformal_forecast(self, coated_part, shortage):
+        """Forecast conversion of standard PCBAs into a conformal-coated variant."""
+        need = max(D(0), D(shortage))
+        source = self.conformal_source_part(coated_part)
+        if not source or need <= 0:
+            return None
+
+        source_ready = self.available_qty(source)
+        source_need = max(D(0), need - source_ready)
+        source_date = date.today()
+        source_basis = []
+        if min(need, source_ready) > 0:
+            source_basis.append(f"{float(min(need, source_ready)):g} {self.ipn(source) or getattr(source, 'name', 'standard PCBA')} ready")
+
+        material = []
+        if source_need > 0:
+            builds = self.child_builds(source, None)
+            state = self.stock_state(source)
+            board_like = bool(builds or any(state["exact"][stage] > 0 for stage in range(0, 6))) and bool(self.bom(source))
+            sf = self.board_forecast(source, source_need, builds) if board_like else None
+            if not sf or not sf.get("forecast_ready"):
+                return {
+                    "ready_now": 0.0, "need_after_ready": float(need), "forecast_ready": None,
+                    "basis": f"Conformal-coated variant requires {float(need):g} {self.ipn(source) or 'standard'} board(s); {float(source_need):g} source board(s) cannot yet be dated.",
+                    "material": (sf or {}).get("material", []),
+                    "pipeline": {"pass_sw": 0, "failed_rework": 0},
+                    "conformal_coating": True,
+                }
+            source_date = day(sf.get("forecast_ready")) or source_date
+            source_basis.append(f"{float(source_need):g} {self.ipn(source) or 'standard PCBA'} forecast ready {iso(source_date)}")
+            material = sf.get("material", [])
+
+        coating_done = source_date + timedelta(days=self.setting("CONFORMAL_COATING_DAYS"))
+        post_hours = (D(self.setting("POST_CC_VI_MIN")) + D(self.setting("POST_CC_SW_MIN"))) * need / D(60)
+        ready = self.add_hours(coating_done, post_hours)
+        basis = "; ".join(source_basis)
+        basis += f" -> {self.setting('CONFORMAL_COATING_DAYS')} calendar days conformal coating -> Convert to {self.ipn(coated_part) or getattr(coated_part, 'name', 'coated variant')} -> {float(D(self.setting('POST_CC_VI_MIN'))*need/D(60)):g}h VI-POST-CC + {float(D(self.setting('POST_CC_SW_MIN'))*need/D(60)):g}h SW-POST-CC"
+        return {
+            "ready_now": 0.0, "need_after_ready": float(need), "forecast_ready": iso(ready),
+            "basis": basis, "material": material,
+            "pipeline": {"pass_sw": 0, "failed_rework": 0},
+            "conformal_coating": True, "source_part_id": getattr(source, "pk", None),
+            "source_ipn": self.ipn(source), "coating_complete": iso(coating_done),
+            "post_cc_hours": float(post_hours),
+        }
+
     def requirement(self, build, item, optional_total_qty=None):
         part=self.subpart(item)
         if not part: return None
@@ -695,8 +765,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             required=D(getattr(item,"quantity",0))*D(getattr(build,"quantity",0))
         available=self.available_qty(part); shortage=max(D(0),required-available)
         builds=self.child_builds(part,build.pk); state=self.stock_state(part)
+        coated_source=self.conformal_source_part(part)
         board_like=bool(builds or any(state["exact"][s]>0 for s in range(0,6))) and bool(self.bom(part))
-        forecast=self.board_forecast(part,shortage,builds) if board_like and shortage>0 else None
+        if shortage>0 and coated_source:
+            forecast=self.conformal_forecast(part,shortage)
+        else:
+            forecast=self.board_forecast(part,shortage,builds) if board_like and shortage>0 else None
         return {"bom_item_id":item.pk,"optional":bool(getattr(item,"optional",False)),"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
                 "required":float(required),"available":float(available),"shortage":float(shortage),"board_like":board_like,
                 "child_builds":[{"id":b.pk,"url":self.build_url(b),"reference":self.build_ref(b),"quantity":float(D(getattr(b,"quantity",0)))} for b in builds],"forecast":forecast}
@@ -742,7 +816,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},
-                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time.","V2.6: -BARE shortages use a 28-calendar-day fabrication fallback when no credible future PO fully covers the shortage; past-due PO ETAs are informational only; PCBA assembly defaults to 10 business days."]}
+                "notes":["V2: BO-created incomplete outputs never count as available merely because they exist.","Pass SW is the board-ready state and counts as usable stock.","Unstaged incomplete outputs recurse into the board BOM to find material blockers.","Incoming -BARE shortage adds 1.0 hour VI per stock item before assembly can start.","-MECH incoming VI default is 0.2 hour per stock item when applicable.","Assembly starts only after all required material is received and inspected; default lead time is 10 business days.","Board defaults: VI 1.5h, Press Fit 0.5h, BU 1.0h, EEPROM 0.25h, SW 2.0h per board.","Final assembly defaults to 4.0h per finished unit.","8 working hours = 1 business day; weekends are skipped.","Optional top-level BOM quantities are selectable from 0 to the BOM maximum and stored in this browser per Build Order.","PO timing uses line target date when set, otherwise PO header target date.","V2.3: BOM entries ending in ' Assembly' are costing-only and excluded from material blockers.","V2.4: existing child BOs use BuildLine.unallocated_quantity() as the authoritative uncovered requirement; fully allocated lines cannot become blockers.","V2.5: allocated material is status-aware. Pending material requires incoming inspection; Failed VI material is unusable and uses the earlier of credible open-PO coverage or the configured replacement-fabrication lead time.","V2.6: -BARE shortages use a 28-calendar-day fabrication fallback when no credible future PO fully covers the shortage; past-due PO ETAs are informational only; PCBA assembly defaults to 10 business days.","V2.7: conformal-coated PCBA variants are recognized from the InvenTree variant relationship plus the documented trailing-C IPN or Conformal Coated name. Standard ready/forecast boards can be converted using a 14-calendar-day coating lead time, followed by VI-POST-CC at 1.5h/board and SW-POST-CC at 2.0h/board. These durations are configurable plugin settings."]}
 
     def build_api(self, request, build_id, **kwargs):
         try:

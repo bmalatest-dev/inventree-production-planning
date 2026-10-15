@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.7 - 2026-10-15
+
+- Forecast conformal-coated PCBA variants from their standard-PCBA variant source.
+- Recognize coating only when the InvenTree variant relationship is present and the coated Part follows the trailing `C` IPN convention or includes `Conformal Coated` in its name.
+- Add configurable 14-calendar-day conformal coating lead time.
+- Add post-coating VI and software-test assumptions using 1.5 h/board and 2.0 h/board defaults.
+- Forecast source-board manufacture first when insufficient standard PCBAs are ready, then add coating and post-CC testing.
+- Document all conformal-coating timing assumptions in the Production Plan assumptions panel.
+- No database migration.
+
 ## 0.2.5
 - Make existing child-BO allocated material stock-status aware.
 - `OK` / usable allocated stock remains assembly-ready.

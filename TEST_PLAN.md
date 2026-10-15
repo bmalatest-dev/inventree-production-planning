@@ -56,3 +56,14 @@ Confirm optional quantities, Pass SW readiness, WIP stage forecasts, PO effectiv
 - Verify a future PO that fully covers the BARE shortage and arrives sooner than the 28-day fabrication fallback is selected instead.
 - Verify past-due open PO ETAs remain visible but do not create historical material-ready dates.
 - Verify TR8M/TR8P/TR8B readiness paths show `10 business days assembly`.
+
+
+## V0.2.7 conformal coating tests
+
+1. Create/use a coated PCBA variant such as TR8RC whose `variant_of` is TR8R. Verify a top-level BOM requiring TR8RC does not recurse directly to TR8R bare-PCB manufacture when enough ready TR8R exists.
+2. With 0 TR8RC and at least 3 ready TR8R, require 3 TR8RC. Verify the readiness path shows 14 calendar days conformal coating, Convert to TR8RC, 4.5h VI-POST-CC, and 6h SW-POST-CC.
+3. With fewer than 3 ready TR8R, verify the missing source quantity is first forecast through the existing TR8R production path, then coating and post-CC tests are added.
+4. Verify a variant ending in C but without the InvenTree variant relationship is not treated as conformal coated.
+5. Verify a variant relation with neither trailing-C convention nor `Conformal Coated` in the Part name is not automatically treated as coated.
+6. Verify existing ready TR8RC stock satisfies the requirement immediately.
+7. Expand Planning Assumptions and verify the 14-day coating, 1.5h VI-POST-CC, and 2.0h SW-POST-CC defaults are stated.
