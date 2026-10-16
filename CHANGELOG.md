@@ -1,3 +1,10 @@
+# v3.9.10
+
+- Production-safe packaging release of the validated v3.9.9 planning logic.
+- Reuses the last known-good collected frontend asset name (`production_planning_v398.js`) because the frontend code is byte-for-byte identical to v3.9.8.
+- Avoids requiring a newly named static asset or manual `collectstatic` / shell access during production deployment.
+- No planning-logic changes and no database migration.
+
 ## v3.9.9
 
 - Fix final mandatory-test stage being double-counted as both Ready stock and WIP.

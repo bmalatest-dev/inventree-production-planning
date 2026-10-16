@@ -1,4 +1,4 @@
-# v3.9.9 focused regression
+# v3.9.10 focused regression
 
 BO-0133 / TR8R:
 - Need 22, Ready 21, WIP 1.
@@ -8,7 +8,7 @@ BO-0133 / TR8R:
 - Must not add PCBA assembly.
 - Ready and WIP quantities remain mutually exclusive.
 
-# v3.9.9 focused regression
+# v3.9.10 focused regression
 
 ## BO-0133 — TR8R
 - Effective mandatory workflow must be ordered: Visual Inspection → Bring Up → EEPROM → Software Test.
