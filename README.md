@@ -36,6 +36,7 @@ Displayed part references are navigable links to the corresponding InvenTree Par
 - Press Fit: 0.5 hours per board
 - Bring-Up: 1 hour per board
 - EEPROM programming/test: 0.25 hours per board
+- TX Waveform Testing: 0.25 hours per board
 - Software Test: 2 hours per board
 - Pass SW means the board is ready
 - final assembly: 4 hours per finished top-level unit
@@ -123,4 +124,4 @@ For non-PCBA manufactured parts, Production Planning distinguishes incomplete BO
 
 
 ### Qualified mandatory test names (v3.9.3)
-Production Planning recognizes mandatory production test templates even when their names include qualifiers such as `Bring Up Stage 1`. Stage discovery uses the actual mandatory Part Test Templates and maps recognized test families to VI, Press Fit, Bring-Up, EEPROM, and Software Test. Optional/admin templates remain excluded.
+Production Planning uses the ordered mandatory InvenTree Test Templates applicable to each Part. If a variant has no direct mandatory templates, the planner inherits the first mandatory template set from its `variant_of` chain. Multiple tests in one family remain separate (for example Bring Up Stage 1 and Bring Up Stage 2). StockItem results are matched by template ID or stable test key. Recognized timed tests include VI, Press Fit, Bring-Up, EEPROM, TX Waveform Testing (0.25 h/board default), and Software Test. Optional/admin templates remain excluded.

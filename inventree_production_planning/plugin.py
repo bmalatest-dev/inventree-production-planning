@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.3 production planning with robust mandatory test-stage discovery."
+    DESCRIPTION = "V3.9.4 production planning with inherited variant tests and ordered mandatory test workflows."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -77,6 +77,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         "PRESS_FIT_MIN": {"name": _("Press Fit minutes per board"), "default": 30, "validator": int},
         "BU_MIN": {"name": _("Bring-Up minutes per board"), "default": 60, "validator": int},
         "EEPROM_MIN": {"name": _("EEPROM programming/test minutes per board"), "default": 15, "validator": int},
+        "TX_WAVEFORM_MIN": {"name": _("TX Waveform Testing minutes per board"), "default": 15, "validator": int},
         "SW_MIN": {"name": _("Software Test minutes per board"), "default": 120, "validator": int},
         "FINAL_ASSEMBLY_MIN": {"name": _("Final assembly minutes per finished unit"), "default": 240, "validator": int},
         "FAILED_VI_REPLACEMENT_DAYS": {"name": _("Failed VI replacement fabrication lead time (calendar days)"), "default": 28, "validator": int},
@@ -115,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v393.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v394.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -276,6 +277,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             key = self.norm(label)
             stage = self.STATUS_ALIASES.get(key)
             output = self.is_build_output(item)
+            # Mandatory test results are more precise than coarse stock-status stages,
+            # especially for inherited workflows with multiple Bring-Up tests.
+            if output and not ("fail" in key or "rework" in key or "quarantine" in key or "damage" in key):
+                progress=self.stock_item_test_progress(item, part)
+                if progress["state"] == "failed":
+                    stage=None
+                    key="failedtest"
+                elif progress["total"]:
+                    stage=progress["stage"]
             if restrict_outputs:
                 # For a selected board BO, only that BO's own outputs may satisfy
                 # its production quantity. Unrelated warehouse stock must not make
@@ -283,11 +293,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 if not output or int(getattr(item, "build_id", 0) or 0) not in build_ids:
                     continue
             if output:
-                if stage == 5:
+                total_phases=len(self.required_board_phases(part))
+                if total_phases and stage == total_phases and self.stock_item_mandatory_test_state(item, part) == "pass":
                     finished += qty
-                    exact[5] += qty
+                    exact.setdefault(stage,D(0)); exact[stage] += qty
                 elif stage:
-                    exact[stage] += qty
+                    exact.setdefault(stage,D(0)); exact[stage] += qty
                 elif "fail" in key or "rework" in key or "quarantine" in key:
                     bad += qty
                 else:
@@ -307,7 +318,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                                 finished += qty
                                 phases = self.required_board_phases(part)
                                 if phases:
-                                    exact[max(st for st, _label, _key in phases)] += qty
+                                    exact[max(st for st, _label, _key, _tid in phases)] += qty
                             elif test_state == "failed":
                                 bad += qty
                             else:
@@ -513,30 +524,44 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if isinstance(value, bool): return value
         return str(value or "").strip().lower() in ("1", "true", "pass", "passed", "ok", "yes")
 
-    def stock_item_mandatory_test_state(self, item, part):
-        """Require passing results for every mandatory template on this StockItem."""
-        try:
-            templates=[t for t in PartTestTemplate.objects.filter(part=part) if getattr(t,"enabled",True) is not False and getattr(t,"required",getattr(t,"mandatory",True)) is not False]
-        except Exception:
-            templates=[]
-        if not templates: return "pass"
+    def stock_item_test_progress(self, item, part):
+        """Return ordered mandatory-test progress for one StockItem.
+
+        Results are matched by stable template key as well as template id so synced
+        / inherited templates and historical results remain comparable.
+        """
+        templates=self.effective_test_templates(part)
+        if not templates:
+            return {"state":"pass", "stage":0, "total":0}
         try:
             manager=getattr(item,"test_results",None); results=list(manager.all()) if manager is not None else []
         except Exception:
             results=[]
         latest={}
         for result in results:
-            test=getattr(result,"test",None) or getattr(result,"template",None)
-            tid=getattr(test,"pk",None) or getattr(result,"test_id",None) or getattr(result,"template_id",None)
-            if tid is None: continue
-            old=latest.get(int(tid))
-            if old is None or int(getattr(result,"pk",0) or 0)>int(getattr(old,"pk",0) or 0): latest[int(tid)]=result
-        pending=False
-        for template in templates:
-            result=latest.get(int(template.pk))
-            if result is None: pending=True
-            elif not self._test_result_passed(result): return "failed"
-        return "pending" if pending else "pass"
+            template=getattr(result,"template",None) or getattr(result,"test",None)
+            if template is None: continue
+            keys=[]
+            tid=getattr(template,"pk",None) or getattr(result,"template_id",None) or getattr(result,"test_id",None)
+            if tid is not None: keys.append(("id",int(tid)))
+            tkey=self.norm(getattr(template,"key",None) or getattr(template,"test_name",None) or str(template))
+            if tkey: keys.append(("key",tkey))
+            for k in keys:
+                old=latest.get(k)
+                if old is None or int(getattr(result,"pk",0) or 0)>int(getattr(old,"pk",0) or 0): latest[k]=result
+        stage=0
+        for idx,template in enumerate(templates,start=1):
+            tkey=self.norm(getattr(template,"key",None) or getattr(template,"test_name",None) or str(template))
+            result=latest.get(("id",int(template.pk))) or latest.get(("key",tkey))
+            if result is None:
+                return {"state":"pending", "stage":stage, "total":len(templates)}
+            if not self._test_result_passed(result):
+                return {"state":"failed", "stage":stage, "total":len(templates)}
+            stage=idx
+        return {"state":"pass", "stage":stage, "total":len(templates)}
+
+    def stock_item_mandatory_test_state(self, item, part):
+        return self.stock_item_test_progress(item, part)["state"]
 
     def tested_material_stock_state(self, part):
         """Variant-aware physical stock split by mandatory-test readiness."""
@@ -819,8 +844,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             return qty * D(self.setting("BARE_VI_MIN", part)) / D(60), "-BARE VI"
         phases=self.required_board_phases(part)
         if phases:
-            mins=sum((D(self.setting(key, part))*qty for _stage,_label,key in phases), D(0))
-            return mins / D(60), " / ".join(label for _stage,label,_key in phases)
+            mins=sum((D(self.setting(key, part))*qty for _stage,_label,key,_tid in phases if key), D(0))
+            return mins / D(60), " / ".join(label for _stage,label,_key,_tid in phases)
         if any("-MECH" in v for v in labels if v):
             return qty * D(self.setting("MECH_VI_MIN", part)) / D(60), "-MECH VI"
         return D(0), ""
@@ -1029,92 +1054,71 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         unresolved=[b for b in blockers if not b.get("ready_date")]
         return (None if unresolved else latest), blockers, unresolved
 
-    def mandatory_test_templates(self, part):
-        """Return enabled/required Part Test Templates for *part*.
+    def effective_test_templates(self, part):
+        """Return enabled mandatory templates applicable to *part* in InvenTree order.
 
-        Production Planning schedules only mandatory tests. Optional/admin templates
-        (for example Failed VI Admin) never create forecast work. The model field
-        name has varied across InvenTree releases, so inspect the template object
-        defensively while treating an absent required flag as required for backwards
-        compatibility.
+        Variant parts commonly store their production test workflow on ``variant_of``.
+        Direct templates take precedence; when none are configured, walk up the
+        variant chain until a mandatory template set is found.
         """
+        seen=set(); current=part
+        while current is not None and getattr(current, "pk", None) not in seen:
+            seen.add(getattr(current, "pk", None))
+            try:
+                templates=[]
+                for template in PartTestTemplate.objects.filter(part=current).order_by("pk"):
+                    if getattr(template, "enabled", True) is False:
+                        continue
+                    required=getattr(template, "required", None)
+                    if required is None:
+                        required=getattr(template, "mandatory", None)
+                    if required is False:
+                        continue
+                    templates.append(template)
+                if templates:
+                    return templates
+            except Exception:
+                return []
+            current=getattr(current, "variant_of", None)
+        return []
+
+    def mandatory_test_templates(self, part):
+        """Return names of the effective mandatory templates for compatibility."""
         out=[]
-        try:
-            for template in PartTestTemplate.objects.filter(part=part):
-                enabled=getattr(template, "enabled", True)
-                if enabled is False:
-                    continue
-                required=getattr(template, "required", None)
-                if required is None:
-                    required=getattr(template, "mandatory", None)
-                if required is False:
-                    continue
-                # InvenTree releases / serializers have used slightly different
-                # attributes for the human-readable template name. Prefer test_name
-                # but fall back defensively instead of silently returning no stages.
-                name = ""
-                for attr in ("test_name", "name", "test", "label"):
-                    value = getattr(template, attr, None)
-                    if value:
-                        name = str(value).strip()
-                        if name:
-                            break
-                if not name:
-                    name = str(template).strip()
-                if name:
-                    out.append(name)
-        except Exception:
-            return []
+        for template in self.effective_test_templates(part):
+            name=""
+            for attr in ("test_name", "name", "test", "label"):
+                value=getattr(template, attr, None)
+                if value:
+                    name=str(value).strip()
+                    if name: break
+            if not name: name=str(template).strip()
+            if name: out.append(name)
         return out
 
+    def test_timing_key(self, template):
+        """Map a mandatory InvenTree test template to its planning duration."""
+        key=self.norm(getattr(template, "key", None) or getattr(template, "test_name", None) or str(template))
+        if key.startswith("visualinspection") or key in ("vi", "boardvi"): return "BOARD_VI_MIN", "Board VI"
+        if key.startswith("pressfit"): return "PRESS_FIT_MIN", "Press Fit"
+        if key.startswith("bringup"): return "BU_MIN", str(getattr(template, "test_name", None) or "Bring-Up")
+        if key.startswith("eeprom"): return "EEPROM_MIN", "EEPROM"
+        if key.startswith("txwaveform"): return "TX_WAVEFORM_MIN", "TX Waveform Testing"
+        if key.startswith("softwaretest") or key.startswith("swtest") or key == "sw": return "SW_MIN", "Software Test"
+        return None, str(getattr(template, "test_name", None) or str(template))
+
     def required_board_phases(self, part):
-        """Return mandatory production test phases configured for this Part.
+        """Return each effective mandatory production test as an ordered phase.
 
-        There is deliberately no generic board-test fallback. A manufactured Part
-        receives only the mandatory tests actually assigned to it. This lets PCBAs
-        retain their real VI / Press Fit / BU / EEPROM / SW sequence while fans,
-        cable assemblies and mechanical subassemblies receive no fictitious board
-        tests.
+        Multiple tests in the same family remain distinct (e.g. Bring Up Stage 1
+        and Bring Up Stage 2). Unknown mandatory tests are retained with zero timing
+        rather than being mistaken for completed work.
         """
-        phases = {
-            1: ("Board VI", "BOARD_VI_MIN"),
-            2: ("Press Fit", "PRESS_FIT_MIN"),
-            3: ("Bring-Up", "BU_MIN"),
-            4: ("EEPROM", "EEPROM_MIN"),
-            5: ("Software Test", "SW_MIN"),
-        }
-        aliases = {
-            "visualinspection": 1, "vi": 1, "boardvi": 1,
-            "pressfit": 2, "pressfitinspection": 2,
-            "bringup": 3, "bu": 3,
-            "eeprom": 4, "eepromflashed": 4, "eepromprogramming": 4,
-            "softwaretest": 5, "sw": 5, "swtest": 5,
-        }
-        def stage_for_name(name):
-            key = self.norm(name)
-            if key in aliases:
-                return aliases[key]
-            # Test templates commonly carry qualifiers such as "Stage 1",
-            # "Functional", or revision text. Match the production-test family
-            # rather than requiring the complete normalized name to be identical.
-            prefix_aliases = (
-                (("visualinspection", "boardvi"), 1),
-                (("pressfit",), 2),
-                (("bringup",), 3),
-                (("eeprom",), 4),
-                (("softwaretest", "swtest"), 5),
-            )
-            for prefixes, stage in prefix_aliases:
-                if any(key.startswith(prefix) for prefix in prefixes):
-                    return stage
-            return None
-
-        found=set()
-        for name in self.mandatory_test_templates(part):
-            stage=stage_for_name(name)
-            if stage:
-                found.add(stage)
-        return [(stage, *phases[stage]) for stage in sorted(found)]
+        out=[]
+        for idx, template in enumerate(self.effective_test_templates(part), start=1):
+            setting_key,label=self.test_timing_key(template)
+            out.append((idx, label, setting_key, int(template.pk)))
+        return out
 
     def is_pcba_part(self, part):
         """Use the established '* Assembly' BOM costing convention to identify PCBAs."""
@@ -1123,8 +1127,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def remaining_stage_hours(self, stage, qty, part=None):
         q=D(qty)
         mins=D(0)
-        for target, _label, key in self.required_board_phases(part):
-            if stage < target:
+        for target, _label, key, _template_id in self.required_board_phases(part):
+            if stage < target and key:
                 mins += D(self.setting(key, part))*q
         return mins / D(60)
 
@@ -1132,9 +1136,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         """Return dated shop-floor test phases from the proven current stage."""
         q=D(qty); cursor=day(start); out=[]
         phases=self.required_board_phases(part)
-        for target,label,key in phases:
+        for target,label,key,_template_id in phases:
             if stage >= target: continue
-            hours=D(self.setting(key, part))*q/D(60)
+            hours=(D(self.setting(key, part))*q/D(60)) if key else D(0)
             end=self.add_hours(cursor,hours)
             out.append({"label":f"{prefix}{label}","start":iso(cursor),"end":iso(end),"kind":"test","hours":float(hours),"quantity":float(q)})
             cursor=end
@@ -1160,9 +1164,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # available_qty already includes Pass SW outputs, so shortage is only what
         # still has to become ready.
         need=max(D(0),D(required_shortage))
-        result={"pipeline":{"unstarted_output":float(ex[0]),"pass_vi":float(ex[1]),"pass_press_fit":float(ex[2]),"pass_bu":float(ex[3]),"eeprom_pass":float(ex[4]),"pass_sw":float(ex[5]),"failed_rework":float(state["failed_rework"])},
+        result={"pipeline":{"unstarted_output":float(ex.get(0,D(0))),"pass_vi":float(ex.get(1,D(0))),"pass_press_fit":float(ex.get(2,D(0))),"pass_bu":float(ex.get(3,D(0))),"eeprom_pass":float(ex.get(4,D(0))),"pass_sw":float(ex.get(5,D(0))),"failed_rework":float(state["failed_rework"])},
                 "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[],"schedule_segments":[],
-                "applicable_phases":[{"stage":st,"label":label,"setting":key} for st,label,key in self.required_board_phases(part)]}
+                "applicable_phases":[{"stage":st,"label":label,"setting":key,"template_id":tid} for st,label,key,tid in self.required_board_phases(part)]}
         if need<=0:
             result["forecast_ready"]=iso(date.today()); result["basis"]="Finished / Pass SW stock covers the requirement."; return result
         today=date.today(); candidates=[]
@@ -1172,8 +1176,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # Existing WIP with a proven test stage can be forecast directly from its
         # current stage. Unstarted BO outputs are intentionally NOT treated as assembled.
         claimed_staged=D(0)
-        for stage,label in [(4,"EEPROM Pass"),(3,"Pass BU"),(2,"Pass Press Fit"),(1,"Pass VI")]:
-            qty=self.claim_wip(part,stage,ex[stage],need-claimed_staged,pool=pool)
+        phases=self.required_board_phases(part)
+        for stage,label,_key,_tid in reversed(phases):
+            qty=self.claim_wip(part,stage,ex.get(stage,D(0)),need-claimed_staged,pool=pool)
             claimed_staged += qty
             if qty>0:
                 hrs=self.remaining_stage_hours(stage,qty,part)
@@ -1211,7 +1216,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 segs=self.material_segments(blockers)
                 segs.append({"label":assembly_label,"start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":assembly_days})
                 segs.extend(test_segs)
-                phase_names='/'.join(label.replace('Board ', '') for _st,label,_key in self.required_board_phases(part))
+                phase_names='/'.join(label.replace('Board ', '') for _st,label,_key,_tid in self.required_board_phases(part))
                 test_text=f" + {float(test_hours):g}h {phase_names}" if phase_names else " + no mandatory testing"
                 candidates.append((remaining_unassembled,finish,f"materials ready {iso(material_ready)} + {assembly_days} business days {assembly_label.lower()}{test_text}",segs))
             elif unresolved:
@@ -1419,8 +1424,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         state=self.stock_state(part, build_ids=[build.pk])
         # For generic assemblies, the highest mandatory test stage is the ready state.
         phases=self.required_board_phases(part)
-        ready_stage=max([st for st,_label,_key in phases], default=0)
-        ready_now=min(qty, D(state["exact"][ready_stage]) if ready_stage else D(state["finished"]))
+        ready_stage=max([st for st,_label,_key,_tid in phases], default=0)
+        ready_now=min(qty, D(state["exact"].get(ready_stage,D(0))) if ready_stage else D(state["finished"]))
         remaining=max(D(0),qty-ready_now)
         forecast=self.board_forecast(part,remaining,[build],pool=pool,output_builds=[build])
         unresolved=[] if forecast and forecast.get("forecast_ready") else [self.part_label(part)]
@@ -1463,7 +1468,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 f"Generic / mechanical assembly: {self.setting('GENERIC_ASSEMBLY_DAYS')} business days by default; scenario and Part-specific overrides may shorten or extend it.",
                 f"Incoming -BARE VI: {self.setting('BARE_VI_MIN')/60:g} hour per stock item.",
                 f"Incoming -MECH VI: {self.setting('MECH_VI_MIN')/60:g} hour per stock item when applicable.",
-                f"Board test per board: VI {self.setting('BOARD_VI_MIN')/60:g}h; Press Fit {self.setting('PRESS_FIT_MIN')/60:g}h; Bring-Up {self.setting('BU_MIN')/60:g}h; EEPROM {self.setting('EEPROM_MIN')/60:g}h; Software Test {self.setting('SW_MIN')/60:g}h.",
+                f"Board test per board: VI {self.setting('BOARD_VI_MIN')/60:g}h; Press Fit {self.setting('PRESS_FIT_MIN')/60:g}h; Bring-Up {self.setting('BU_MIN')/60:g}h; EEPROM {self.setting('EEPROM_MIN')/60:g}h; TX Waveform {self.setting('TX_WAVEFORM_MIN')/60:g}h; Software Test {self.setting('SW_MIN')/60:g}h.",
                 f"Final assembly: {self.setting('FINAL_ASSEMBLY_MIN')/60:g} hours per finished unit.",
                 f"Conformal coating: {self.setting('CONFORMAL_COATING_DAYS')} calendar days, then VI-POST-CC {self.setting('POST_CC_VI_MIN')/60:g}h/board and SW-POST-CC {self.setting('POST_CC_SW_MIN')/60:g}h/board.",
                 f"Undated / Failed-VI -BARE replacement fabrication fallback: {self.setting('FAILED_VI_REPLACEMENT_DAYS')} calendar days when no earlier credible PO fully covers the shortage."

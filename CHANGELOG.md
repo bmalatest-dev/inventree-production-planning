@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.9.4
+- Fixed mandatory test discovery for InvenTree variant parts: when a variant has no direct mandatory Test Templates, Production Planning now uses the first mandatory template set found on its `variant_of` chain.
+- Mandatory board tests are now kept as an ordered per-template workflow instead of collapsing multiple tests into one generic stage. This preserves distinct tests such as Bring Up Stage 1 and Bring Up Stage 2.
+- StockItem progress is derived from the actual mandatory test results, matched by template ID or stable test key, so inherited/synced historical results remain usable.
+- Added TX Waveform Testing timing with a default of 15 minutes (0.25 h) per board.
+- Optional tests such as Rework remain excluded from the normal mandatory test sequence; assembled-board failure still uses the configured rework path followed by the full mandatory retest sequence.
+- No database migration required.
+
 ## 3.9.3
 - Fixed mandatory board-test stage discovery when InvenTree Test Template names contain qualifiers such as `Bring Up Stage 1`.
 - Mandatory template names are now read defensively across supported model attribute names instead of silently collapsing to an empty test sequence.

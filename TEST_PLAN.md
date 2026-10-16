@@ -167,3 +167,14 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - Confirm the failed/rework unit receives 2 business days rework followed by the complete mandatory FR2TS test sequence from VI.
 - Confirm qualified names such as `Bring Up Stage 1` map to Bring-Up.
 - Re-run BO-0133 and BO-0177 to confirm board rework and generic/mechanical stock readiness remain unchanged.
+
+
+## v3.9.4 Variant / inherited mandatory-test regression
+
+1. Open BO-0136 / FR2TS. FR2TS has no direct Test Templates and is a variant of Tate BBTX PCBA. Confirm Production Planning inherits the parent mandatory workflow.
+2. Confirm the effective ordered workflow includes Visual Inspection, Bring Up Stage 1, EEPROM Programmed, Bring Up Stage 2, TX Waveform Testing, and Software Test. Rework must not appear as a normal mandatory stage.
+3. For the 39 FR2TS StockItems which have passed through Bring Up Stage 2 / EEPROM but have no TX Waveform Testing or Software Test result, confirm the planner schedules 0.25 h TX Waveform + 2.0 h Software Test per board (2.25 h/board remaining).
+4. Confirm any failed assembled FR2TS board follows 2 business days rework and then restarts the complete mandatory test sequence; PCBA assembly is not repeated.
+5. Regression-test BO-0133: Pass VI WIP continues through only its remaining mandatory tests and failed assembled-board WIP uses rework + full retest.
+6. Regression-test BO-0177: fan finished stock with no mandatory tests remains Ready; CHAS-TR3-RUG-PV stock with mandatory VI but no pass remains inspection/test WIP.
+7. Confirm board-specific/scenario timing controls include TX Waveform Testing at 0.25 h/board by default.
