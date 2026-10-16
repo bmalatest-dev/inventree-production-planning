@@ -1,13 +1,14 @@
-## v3.9.2
-
-- Fix mandatory PCB test-stage discovery for qualified template names such as `Bring Up Stage 1`.
-- Pass BU WIP now retains later mandatory stages such as EEPROM and Software Test when those templates are present.
-- Rework full-retest paths use the same corrected mandatory-stage discovery.
-- Generic/mechanical finished-stock readiness behavior from v3.9.1 is unchanged.
-
 # Changelog
 
-## 3.9.2
+## 3.9.3
+- Fixed mandatory board-test stage discovery when InvenTree Test Template names contain qualifiers such as `Bring Up Stage 1`.
+- Mandatory template names are now read defensively across supported model attribute names instead of silently collapsing to an empty test sequence.
+- Qualified production-test names are matched by test family for VI, Press Fit, Bring-Up, EEPROM, and Software Test.
+- Preserves v3.9.1 generic/mechanical completed-stock readiness and all assembled-board rework rules.
+- BO-0136 regression target: Pass BU WIP must retain every later mandatory test (including Software Test when configured); post-rework units must receive the complete mandatory retest sequence.
+
+
+## 3.9.1
 - Count completed non-PCBA build outputs as ready stock when InvenTree marks `is_building = false`.
 - Completed generic/mechanical outputs with no mandatory tests are ready immediately when their stock status is usable.
 - Completed generic/mechanical outputs with mandatory tests still require passing results for every mandatory template.
