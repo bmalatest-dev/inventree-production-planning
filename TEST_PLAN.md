@@ -185,3 +185,12 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - BO-0133 expected mix: 20 ready, 1 intermediate VI WIP with remaining mandatory tests, 1 failed Bring Up board using 2 business days rework followed by the full mandatory retest sequence from VI.
 - BO-0136 / FR2TS must retain v3.9.4 behavior: inherited parent workflow including both Bring Up stages, EEPROM, TX Waveform Testing, and Software Test; 39 boards at Bring Up Stage 2 retain 87.75 h for TX Waveform + Software Test.
 - BO-0177 mechanical / mandatory-test behavior must remain unchanged.
+
+
+## v3.9.6 TEMPLATE duplicate / assembled-WIP regression
+
+1. BO-0133 / TR8R: confirm `TEMPLATE Bring Up`, `TEMPLATE EEPROM Flashed`, `TEMPLATE Software Test`, and `TEMPLATE Visual Inspection` do not appear when equivalent concrete tests exist.
+2. Confirm existing assembled TR8R outputs are never sent through PCBA assembly solely because a duplicate TEMPLATE test has no result.
+3. Expected BO-0133: 20 Ready; 1 existing VI-stage WIP continues only through remaining mandatory tests; 1 failed Bring-Up board gets 2 business days rework plus the full de-duplicated mandatory retest sequence; no PCBA assembly for these 22 existing boards.
+4. BO-0136 / FR2TS regression: inherited workflow remains active; 39 boards after Bring Up Stage 2 retain TX Waveform + Software Test (87.75 h total at current defaults), plus the failed-board rework path.
+5. BO-0177 regression: generic/mechanical finished-stock and mandatory-inspection behavior remains unchanged.

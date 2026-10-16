@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.5 production planning with merged variant-family mandatory test workflows."
+    DESCRIPTION = "V3.9.6 production planning with semantic TEMPLATE de-duplication for variant-family test workflows."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -116,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v395.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v396.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -544,14 +544,14 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             keys=[]
             tid=getattr(template,"pk",None) or getattr(result,"template_id",None) or getattr(result,"test_id",None)
             if tid is not None: keys.append(("id",int(tid)))
-            tkey=self.norm(getattr(template,"key",None) or getattr(template,"test_name",None) or str(template))
+            tkey=self.workflow_test_identity(template)
             if tkey: keys.append(("key",tkey))
             for k in keys:
                 old=latest.get(k)
                 if old is None or int(getattr(result,"pk",0) or 0)>int(getattr(old,"pk",0) or 0): latest[k]=result
         stage=0
         for idx,template in enumerate(templates,start=1):
-            tkey=self.norm(getattr(template,"key",None) or getattr(template,"test_name",None) or str(template))
+            tkey=self.workflow_test_identity(template)
             result=latest.get(("id",int(template.pk))) or latest.get(("key",tkey))
             if result is None:
                 return {"state":"pending", "stage":stage, "total":len(templates)}
@@ -1054,6 +1054,25 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         unresolved=[b for b in blockers if not b.get("ready_date")]
         return (None if unresolved else latest), blockers, unresolved
 
+    def workflow_test_identity(self, template):
+        """Return a semantic identity for a production test template.
+
+        Some legacy/template Parts define tests named like ``TEMPLATE Bring Up``
+        while the concrete Part family also defines ``Bring Up``. These represent
+        the same production operation. Strip a leading TEMPLATE marker so the
+        effective workflow can de-duplicate them without depending on database ids.
+        """
+        raw=getattr(template, "key", None) or getattr(template, "test_name", None) or str(template)
+        key=self.norm(raw)
+        if key.startswith("template") and len(key)>len("template"):
+            key=key[len("template"):]
+        return key
+
+    def is_template_placeholder_test(self, template):
+        """True when the configured test is explicitly marked TEMPLATE."""
+        values=(getattr(template, "test_name", None), getattr(template, "name", None), getattr(template, "key", None))
+        return any(str(v or "").strip().lower().startswith("template") for v in values)
+
     def effective_test_templates(self, part):
         """Return the merged mandatory test workflow applicable to *part*.
 
@@ -1082,12 +1101,24 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 for template in PartTestTemplate.objects.filter(part=family_part).order_by("pk"):
                     if getattr(template, "enabled", True) is False:
                         continue
-                    key=self.norm(getattr(template, "key", None) or getattr(template, "test_name", None) or str(template))
-                    # Template keys are expected to be stable. Fall back to a
-                    # per-template identity only when no usable key is available.
+                    key=self.workflow_test_identity(template)
+                    # Treat explicit TEMPLATE-prefixed tests as placeholders for the
+                    # equivalent concrete production test. If both exist anywhere
+                    # in the variant chain, keep the non-TEMPLATE definition. For
+                    # otherwise equivalent definitions, the more-specific child
+                    # still replaces its ancestor as before.
                     identity=key or f"template:{getattr(template, 'pk', id(template))}"
                     if identity in positions:
-                        ordered[positions[identity]]=template
+                        pos=positions[identity]
+                        existing=ordered[pos]
+                        existing_placeholder=self.is_template_placeholder_test(existing)
+                        incoming_placeholder=self.is_template_placeholder_test(template)
+                        if existing_placeholder and not incoming_placeholder:
+                            ordered[pos]=template
+                        elif not existing_placeholder and incoming_placeholder:
+                            continue
+                        else:
+                            ordered[pos]=template
                     else:
                         positions[identity]=len(ordered)
                         ordered.append(template)
@@ -1120,7 +1151,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
 
     def test_timing_key(self, template):
         """Map a mandatory InvenTree test template to its planning duration."""
-        key=self.norm(getattr(template, "key", None) or getattr(template, "test_name", None) or str(template))
+        key=self.workflow_test_identity(template)
         if key.startswith("visualinspection") or key in ("vi", "boardvi"): return "BOARD_VI_MIN", "Board VI"
         if key.startswith("pressfit"): return "PRESS_FIT_MIN", "Press Fit"
         if key.startswith("bringup"): return "BU_MIN", str(getattr(template, "test_name", None) or "Bring-Up")

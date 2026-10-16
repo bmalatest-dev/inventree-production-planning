@@ -125,3 +125,7 @@ For non-PCBA manufactured parts, Production Planning distinguishes incomplete BO
 
 ### Qualified mandatory test names (v3.9.3)
 Production Planning uses the ordered mandatory InvenTree Test Templates applicable to each Part. For variants, the planner merges enabled Test Templates across the `variant_of` chain by stable test key. Child templates override matching parent templates while retaining the workflow position, so both fully inherited and partially overridden test workflows are supported. Multiple tests in one family remain separate (for example Bring Up Stage 1 and Bring Up Stage 2). StockItem results are matched by template ID or stable test key. Recognized timed tests include VI, Press Fit, Bring-Up, EEPROM, TX Waveform Testing (0.25 h/board default), and Software Test. Optional/admin templates remain excluded.
+
+
+### v3.9.6 TEMPLATE test de-duplication
+Legacy template/variant families may expose both a placeholder test such as `TEMPLATE Bring Up` and the concrete `Bring Up` test. Production Planning treats those as the same production operation and keeps the non-TEMPLATE definition. Existing assembled StockItems are evaluated against this de-duplicated workflow, so duplicate inherited template tests cannot force completed/WIP PCB outputs back through PCBA assembly.

@@ -1,3 +1,11 @@
+## v3.9.6
+
+- De-duplicate inherited test templates semantically when an ancestor test is explicitly prefixed `TEMPLATE` and an equivalent concrete test exists in the Part/variant workflow.
+- Prefer the concrete non-`TEMPLATE` test over its placeholder duplicate.
+- Match historical StockItem test results using the same semantic test identity so inherited/template-linked results still qualify the actual assembled PCB.
+- Prevent duplicate TEMPLATE phases from making already-assembled WIP appear to require PCBA assembly again.
+- Preserve v3.9.5 merged child/parent mandatory workflows, FR2TS inherited tests, and assembled-board rework/full-retest behavior.
+
 ## v3.9.5
 - Merge mandatory Test Templates across a Part's `variant_of` chain instead of inheriting only when the child has no mandatory templates.
 - Child templates override matching parent templates by stable test key while preserving the parent workflow position.
