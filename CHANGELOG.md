@@ -1,3 +1,10 @@
+## v3.9.5
+- Merge mandatory Test Templates across a Part's `variant_of` chain instead of inheriting only when the child has no mandatory templates.
+- Child templates override matching parent templates by stable test key while preserving the parent workflow position.
+- Fix TR8R-style partial workflows where Visual Inspection is defined on the child but Bring Up, EEPROM, and Software Test are defined on the generic parent.
+- Preserve v3.9.4 FR2TS inherited workflow behavior, TX Waveform timing, and assembled-board rework/full-retest behavior.
+- No database migration required.
+
 # Changelog
 
 ## v3.9.4

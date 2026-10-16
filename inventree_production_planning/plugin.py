@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.4 production planning with inherited variant tests and ordered mandatory test workflows."
+    DESCRIPTION = "V3.9.5 production planning with merged variant-family mandatory test workflows."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -116,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v394.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v395.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -1055,32 +1055,54 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         return (None if unresolved else latest), blockers, unresolved
 
     def effective_test_templates(self, part):
-        """Return enabled mandatory templates applicable to *part* in InvenTree order.
+        """Return the merged mandatory test workflow applicable to *part*.
 
-        Variant parts commonly store their production test workflow on ``variant_of``.
-        Direct templates take precedence; when none are configured, walk up the
-        variant chain until a mandatory template set is found.
+        InvenTree variant families can split a workflow across the generic parent
+        and a concrete child Part. Build the enabled workflow from root -> child,
+        matching templates by stable test key. A child template replaces the
+        matching parent template while retaining that test's workflow position;
+        child-only tests are appended in the child's configured order. Finally,
+        optional templates are removed from the production workflow.
+
+        This supports all observed layouts:
+        - no child templates -> inherit the parent workflow (e.g. FR2TS)
+        - partial child templates -> merge child + parent (e.g. TR8R)
+        - complete child workflow -> child templates override matching parent keys
         """
-        seen=set(); current=part
+        chain=[]; seen=set(); current=part
         while current is not None and getattr(current, "pk", None) not in seen:
             seen.add(getattr(current, "pk", None))
-            try:
-                templates=[]
-                for template in PartTestTemplate.objects.filter(part=current).order_by("pk"):
+            chain.append(current)
+            current=getattr(current, "variant_of", None)
+        chain.reverse()
+
+        ordered=[]; positions={}
+        try:
+            for family_part in chain:
+                for template in PartTestTemplate.objects.filter(part=family_part).order_by("pk"):
                     if getattr(template, "enabled", True) is False:
                         continue
-                    required=getattr(template, "required", None)
-                    if required is None:
-                        required=getattr(template, "mandatory", None)
-                    if required is False:
-                        continue
-                    templates.append(template)
-                if templates:
-                    return templates
-            except Exception:
-                return []
-            current=getattr(current, "variant_of", None)
-        return []
+                    key=self.norm(getattr(template, "key", None) or getattr(template, "test_name", None) or str(template))
+                    # Template keys are expected to be stable. Fall back to a
+                    # per-template identity only when no usable key is available.
+                    identity=key or f"template:{getattr(template, 'pk', id(template))}"
+                    if identity in positions:
+                        ordered[positions[identity]]=template
+                    else:
+                        positions[identity]=len(ordered)
+                        ordered.append(template)
+        except Exception:
+            return []
+
+        mandatory=[]
+        for template in ordered:
+            required=getattr(template, "required", None)
+            if required is None:
+                required=getattr(template, "mandatory", None)
+            if required is False:
+                continue
+            mandatory.append(template)
+        return mandatory
 
     def mandatory_test_templates(self, part):
         """Return names of the effective mandatory templates for compatibility."""

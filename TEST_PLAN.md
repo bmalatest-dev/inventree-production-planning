@@ -178,3 +178,10 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 5. Regression-test BO-0133: Pass VI WIP continues through only its remaining mandatory tests and failed assembled-board WIP uses rework + full retest.
 6. Regression-test BO-0177: fan finished stock with no mandatory tests remains Ready; CHAS-TR3-RUG-PV stock with mandatory VI but no pass remains inspection/test WIP.
 7. Confirm board-specific/scenario timing controls include TX Waveform Testing at 0.25 h/board by default.
+
+
+## v3.9.5 Partial variant-workflow regression
+- BO-0133 / TR8R: effective mandatory sequence must be Visual Inspection (child), Bring Up (parent), EEPROM Flashed (parent), Software Test (parent).
+- BO-0133 expected mix: 20 ready, 1 intermediate VI WIP with remaining mandatory tests, 1 failed Bring Up board using 2 business days rework followed by the full mandatory retest sequence from VI.
+- BO-0136 / FR2TS must retain v3.9.4 behavior: inherited parent workflow including both Bring Up stages, EEPROM, TX Waveform Testing, and Software Test; 39 boards at Bring Up Stage 2 retain 87.75 h for TX Waveform + Software Test.
+- BO-0177 mechanical / mandatory-test behavior must remain unchanged.
