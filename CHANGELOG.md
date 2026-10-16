@@ -125,3 +125,12 @@
 - Gantt segments, remaining-test hours, readiness text, and board-specific timing overrides use the same Part-specific test flow.
 - Fully satisfied board BOs display **READY / READY NOW** rather than a future forecast.
 - No database migration required.
+
+
+## 3.7.1
+- Fixed intermediate Pass VI / Pass BU / EEPROM WIP so remaining core board tests are not accidentally omitted when a Part has a sparse Test Template set.
+- Core assembled-board flow is VI -> Bring-Up -> EEPROM -> Software Test; Press Fit is included only when the Part explicitly has a Press Fit Test Template.
+- Failed tests on assembled-board outputs now forecast 2 business days of rework (configurable), followed by the complete mandatory test flow restarting at VI.
+- Failed VI on `-BARE` remains a replacement/remanufacture case and continues to use PO coverage or the PCB fabrication fallback.
+- Added Rework to scenario-wide and board-specific planning-time overrides and to Gantt activity detail.
+- No database migration required.

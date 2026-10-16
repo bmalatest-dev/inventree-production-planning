@@ -108,3 +108,23 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - Pass VI quantity receives only later configured stages.
 - Untested assembled output receives all configured board-test stages.
 - Total forecast demand must not exceed the BO quantity.
+
+
+## v3.7.1 acceptance tests
+
+### BO-0133 — mixed Ready / WIP / failed assembled board
+- Build quantity: 22 TR8R.
+- Precondition: 20 outputs Pass SW, 1 output Pass VI, 1 output Failed BU.
+- Expected Ready: 20.
+- Expected Pass VI WIP: 1; it skips VI and receives remaining mandatory tests (Bring-Up, EEPROM, Software Test, plus Press Fit only if TR8R has a Press Fit Test Template).
+- Expected Failed BU: 1; it does NOT repeat materials or PCBA assembly. It receives 2 business days Rework, then restarts mandatory testing at VI and continues through every mandatory stage.
+- Gantt should show the Pass VI WIP path and a separate Rework -> full retest path.
+- Forecast quantity must total exactly 22 boards.
+
+### Failed `-BARE` regression
+- A `-BARE` stock item at Failed VI must NOT use assembled-board rework.
+- It remains unusable and requires replacement/remanufacture via credible PO coverage or the configured PCB fabrication fallback, followed by incoming VI.
+
+### Press Fit applicability regression
+- TR8L (no Press Fit template) must omit Press Fit from forecast, Gantt and board-specific timing stages.
+- A board with a Press Fit Test Template must include Press Fit.

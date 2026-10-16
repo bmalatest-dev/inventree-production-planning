@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.7.0 production planning with status-aware completed outputs, WIP stages, and part-specific test flows."
+    DESCRIPTION = "V3.7.1 production planning with stage-aware WIP and assembled-board rework forecasting."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -69,6 +69,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     SETTINGS = {
         "WORK_HOURS_DAY": {"name": _("Working hours per business day"), "default": 8, "validator": int},
         "PCBA_ASSEMBLY_DAYS": {"name": _("PCBA assembly lead time after inspected material is ready (business days)"), "default": 10, "validator": int},
+        "REWORK_DAYS": {"name": _("Assembled-board rework lead time (business days)"), "default": 2, "validator": int},
         "BARE_VI_MIN": {"name": _("-BARE incoming VI minutes per stock item"), "default": 60, "validator": int},
         "MECH_VI_MIN": {"name": _("-MECH incoming VI minutes per stock item requiring VI"), "default": 12, "validator": int},
         "BOARD_VI_MIN": {"name": _("Assembled-board VI minutes per board"), "default": 90, "validator": int},
@@ -113,7 +114,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v370.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v371.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -961,7 +962,18 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                     found.add(aliases[key])
         except Exception:
             found = set()
-        if not found:
+        # All assembled PCBAs follow the core production test flow VI -> BU ->
+        # EEPROM -> SW. Press Fit is hardware-dependent and is included only when
+        # the Part explicitly has a matching Test Template. This prevents a board
+        # such as TR8L (no press-fit connectors) from receiving fictitious Press
+        # Fit time while still ensuring a sparse template set cannot accidentally
+        # drop BU / EEPROM / SW from WIP forecasting.
+        core = {1, 3, 4, 5}
+        if found:
+            found = core | ({2} if 2 in found else set())
+        else:
+            # Legacy assembled boards with no recognizable templates retain the
+            # historical full flow as the conservative fallback.
             found = set(phases)
         return [(stage, *phases[stage]) for stage in sorted(found)]
 
@@ -1021,11 +1033,27 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 hrs=self.remaining_stage_hours(stage,qty,part)
                 segs, seg_end = self.board_test_segments(today, stage, qty, prefix=f"{label} WIP — ", part=part)
                 candidates.append((qty,seg_end,f"{label} WIP + {float(hrs):g}h remaining test",segs))
-        # In a multi-build plan, only WIP actually claimed by this priority can
-        # reduce the quantity which still has to be assembled.  Using the raw
-        # database WIP total here would let a later BO reuse WIP already consumed
-        # virtually by a higher-priority BO.
-        remaining_unassembled=max(D(0),need-claimed_staged)
+        # Failed tests on an assembled board do not imply that the PCBA must be
+        # manufactured again. Treat any failed/rework assembled-board output as
+        # requiring the configured rework lead time, then restart the complete
+        # mandatory board test flow from VI. (-BARE Failed VI is handled separately
+        # by the raw-material replacement/fabrication logic.)
+        failed_qty=self.claim_wip(part,-1,state["failed_rework"],need-claimed_staged,pool=pool)
+        claimed_failed=D(0)
+        if failed_qty>0:
+            claimed_failed=failed_qty
+            rework_days=self.setting("REWORK_DAYS", part)
+            rework_end=add_business_days(today,rework_days)
+            test_hours=self.remaining_stage_hours(0,failed_qty,part)
+            test_segs,finish=self.board_test_segments(rework_end,0,failed_qty,prefix="Post-rework — ",part=part)
+            segs=[{"label":"Rework","start":iso(today),"end":iso(rework_end),"kind":"rework","business_days":rework_days,"quantity":float(failed_qty)}]
+            segs.extend(test_segs)
+            candidates.append((failed_qty,finish,f"rework {rework_days} business days + {float(test_hours):g}h full retest from VI",segs))
+
+        # In a multi-build plan, only WIP/rework actually claimed by this priority
+        # can reduce the quantity which still has to be assembled. Using raw DB
+        # totals here would let a later BO reuse work virtually consumed already.
+        remaining_unassembled=max(D(0),need-claimed_staged-claimed_failed)
         if remaining_unassembled>0:
             material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled,builds=builds,pool=pool)
             result["material"]=blockers
