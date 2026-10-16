@@ -129,7 +129,7 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - TR8L (no Press Fit template) must omit Press Fit from forecast, Gantt and board-specific timing stages.
 - A board with a Press Fit Test Template must include Press Fit.
 
-## v3.8.0 acceptance cases
+## v3.9.0 acceptance cases
 
 ### BO-0177 / generic and mechanical assemblies
 - PVFAN-40mmx28mm-4P-26CFM-65cm-NIL-1-PV has no mandatory test templates: forecast must show Generic / mechanical assembly only, with no VI / Press Fit / BU / EEPROM / SW.
@@ -142,3 +142,13 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - BO-0136 remains stage-aware.
 - BO-0133 remains 20 Pass SW ready + 1 Pass VI continuing remaining mandatory tests + 1 Failed BU using 2 business days rework then full mandatory retest from VI.
 - Failed VI `-BARE` still uses replacement/remanufacture, not assembled-board rework.
+
+
+## v3.9.0 stock-item test readiness
+- BO-0177 / CHAS-TR3-RUG-PV: 10 units with usable `OK` status, mandatory VI template, and no VI result must be **0 Ready / 10 awaiting test**, with VI time forecast.
+- After all 10 specific StockItems have passing VI results, the requirement must become **10 Ready / Now**.
+- A Part with no mandatory Test Templates remains Ready from usable stock status alone.
+- Optional/admin templates (for example `Failed VI Admin`) must not block readiness or add time.
+- Mixed stock test state must be quantity-aware (e.g. 10 passed + 5 untested for Need 15 => 10 Ready + 5 inspection WIP).
+- Recheck BO-0133 and BO-0136 to confirm assembled-board stage and rework behavior is unchanged.
+- Production Requirements must show actionable rows first and place fully Ready rows under the collapsed `Ready Requirements` section.

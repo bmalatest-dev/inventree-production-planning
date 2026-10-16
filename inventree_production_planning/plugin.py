@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.8.0 production planning with PCBA-aware and generic/mechanical assembly forecasting."
+    DESCRIPTION = "V3.9.0 production planning with stock-item test-aware material readiness."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -115,7 +115,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v380.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v390.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -476,22 +476,69 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         """
         return max(D(0), self.available_qty(part) - self.globally_allocated_qty(part))
 
+    @staticmethod
+    def _test_result_passed(result):
+        value = getattr(result, "result", None)
+        if isinstance(value, bool): return value
+        if value is None: value = getattr(result, "value", None)
+        if isinstance(value, bool): return value
+        return str(value or "").strip().lower() in ("1", "true", "pass", "passed", "ok", "yes")
+
+    def stock_item_mandatory_test_state(self, item, part):
+        """Require passing results for every mandatory template on this StockItem."""
+        try:
+            templates=[t for t in PartTestTemplate.objects.filter(part=part) if getattr(t,"enabled",True) is not False and getattr(t,"required",getattr(t,"mandatory",True)) is not False]
+        except Exception:
+            templates=[]
+        if not templates: return "pass"
+        try:
+            manager=getattr(item,"test_results",None); results=list(manager.all()) if manager is not None else []
+        except Exception:
+            results=[]
+        latest={}
+        for result in results:
+            test=getattr(result,"test",None) or getattr(result,"template",None)
+            tid=getattr(test,"pk",None) or getattr(result,"test_id",None) or getattr(result,"template_id",None)
+            if tid is None: continue
+            old=latest.get(int(tid))
+            if old is None or int(getattr(result,"pk",0) or 0)>int(getattr(old,"pk",0) or 0): latest[int(tid)]=result
+        pending=False
+        for template in templates:
+            result=latest.get(int(template.pk))
+            if result is None: pending=True
+            elif not self._test_result_passed(result): return "failed"
+        return "pending" if pending else "pass"
+
+    def tested_material_stock_state(self, part):
+        """Variant-aware physical stock split by mandatory-test readiness."""
+        custom=self.custom_statuses(); custom_logical=self.custom_logical_statuses()
+        ready=D(0); pending=D(0); failed=D(0); blocked=D(0); family=[part]
+        try: family += [p for p in part.get_all_variants() if getattr(p,"pk",None)!=getattr(part,"pk",None)]
+        except Exception: pass
+        seen=set()
+        for family_part in family:
+            if getattr(family_part,"pk",None) in seen: continue
+            seen.add(getattr(family_part,"pk",None)); has_tests=bool(self.mandatory_test_templates(family_part))
+            for item in self.stock(family_part):
+                qty=D(getattr(item,"quantity",0)); label=self.norm(self.status_label(item,custom))
+                if qty<=0: continue
+                if "fail" in label or "rework" in label or "quarantine" in label or "damage" in label: failed+=qty; continue
+                if not self.logical_available(item,custom_logical): blocked+=qty; continue
+                if not has_tests: ready+=qty; continue
+                state=self.stock_item_mandatory_test_state(item,family_part)
+                if state=="pass": ready+=qty
+                elif state=="pending": pending+=qty
+                else: failed+=qty
+        ready=max(D(0),ready-self.globally_allocated_qty(part))
+        return {"ready":ready,"pending":pending,"failed":failed,"blocked":blocked}
+
     def material_available_qty(self, part):
-        """Return InvenTree-native availability for ordinary BOM material.
-
-        InvenTree's ``Part.available_stock`` is the value shown to users on a
-        BuildLine and includes compatible variant stock.  Production Planning
-        must use the same value for purchased/raw BOM material so that a valid
-        component variant does not become a false shortage.
-
-        Do *not* use this for finished PCBAs / WIP: board variants can represent
-        a manufacturing conversion (e.g. conformal coating), for which the exact
-        stock-state logic above is required.
-        """
+        """Return production-ready ordinary material, including mandatory tests."""
+        if self.mandatory_test_templates(part):
+            return self.tested_material_stock_state(part)["ready"]
         try:
             return max(D(0), D(part.available_stock))
         except Exception:
-            # Compatibility fallback for older InvenTree versions.
             return self.unallocated_available_qty(part)
 
     def material_family_key(self, part):
@@ -603,6 +650,16 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         pool["material"][key] -= take
         if take > 0:
             pool["claims"].append({"type":"pending_stock","part_id":part.pk,"label":self.part_label(part),"quantity":float(take),"pool_key":key})
+        return take
+
+    def claim_pending_test_stock(self, part, need, pool=None):
+        """Claim physical usable-status stock which still lacks mandatory test pass(es)."""
+        need=max(D(0),D(need)); available=self.tested_material_stock_state(part)["pending"]
+        if pool is None: return min(need,available)
+        key=("pending_test",self.material_family_key(part))
+        if key not in pool["material"]: pool["material"][key]=available
+        take=min(need,pool["material"][key]); pool["material"][key]-=take
+        if take>0: pool["claims"].append({"type":"pending_test_stock","part_id":part.pk,"label":self.part_label(part),"quantity":float(take),"pool_key":key})
         return take
 
     def claim_exact_stock(self, part, need, pool=None):
@@ -731,6 +788,10 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         qty = D(quantity)
         if any(v.endswith("-BARE") for v in labels if v):
             return qty * D(self.setting("BARE_VI_MIN", part)) / D(60), "-BARE VI"
+        phases=self.required_board_phases(part)
+        if phases:
+            mins=sum((D(self.setting(key, part))*qty for _stage,_label,key in phases), D(0))
+            return mins / D(60), " / ".join(label for _stage,label,_key in phases)
         if any("-MECH" in v for v in labels if v):
             return qty * D(self.setting("MECH_VI_MIN", part)) / D(60), "-MECH VI"
         return D(0), ""
@@ -756,6 +817,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             failed_vi = state["failed_vi"]
             blocked = state["blocked"]
             pending = self.claim_pending_bare_stock(part, remaining, pool=pool)
+            remaining = max(D(0), remaining - pending)
+        elif self.mandatory_test_templates(part):
+            state = self.tested_material_stock_state(part)
+            failed_vi = state["failed"]
+            blocked = state["blocked"]
+            pending = self.claim_pending_test_stock(part, remaining, pool=pool)
             remaining = max(D(0), remaining - pending)
 
         shortage = remaining
@@ -790,7 +857,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         result = {"part_id":getattr(part,"pk",None),"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"label":self.part_label(part),
                 "required":float(need),"available":float(available),"pending_qty":float(pending),"shortage":float(shortage),
                 "incoming_qty":float(shortage),"received_date":iso(incoming_received),
-                "inspection_hours":float(total_inspection_hours),"inspection":inspection or ("-BARE VI" if pending > 0 and self.is_bare_part(part) else ""),"ready_date":iso(ready),
+                "inspection_hours":float(total_inspection_hours),"inspection":inspection or ((self.inspection_hours(part,pending)[1]) if pending > 0 else ""),"ready_date":iso(ready),
                 "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[]),
                 "failed_vi_qty":float(failed_vi),"blocked_qty":float(blocked)}
         if replacement:
@@ -918,7 +985,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 m["buildline_allocated"] = float(D(line_state.get("allocated", 0)))
                 m["buildline_consumed"] = float(D(line_state.get("consumed", 0)))
                 m["buildline_unallocated"] = float(D(line_state.get("unallocated", 0)))
-            if m["shortage"] <= 0:
+            if D(m.get("shortage",0)) <= 0 and D(m.get("pending_qty",0)) <= 0:
                 continue
             m["path"] = " > ".join([self.part_label(board_part), self.part_label(sub)])
             if m.get("ready_date"):
@@ -1240,15 +1307,17 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             # True leaf/raw material. This is the canonical path used both by an
             # individual BO and Combined Material Shortages.
             m=self.material_requirement(part,required,pool=pool)
-            available=D(m.get("available",0)); shortage=D(m.get("shortage",0))
+            available=D(m.get("available",0)); shortage=max(D(0),required-available)
             forecast=None
             if shortage>0:
                 ready=m.get("ready_date")
-                basis=(f"{self.part_label(part)} material ready {ready}" if ready else
+                pending=D(m.get("pending_qty",0))
+                basis=(f"{self.part_label(part)} requires {float(pending):g} unit(s) of mandatory inspection/testing; ready {ready}" if pending>0 and ready else
+                       f"{self.part_label(part)} material ready {ready}" if ready else
                        f"{self.part_label(part)} has no dated full material coverage")
                 forecast={"ready_now":float(available),"need_after_ready":float(shortage),
                           "forecast_ready":ready,"basis":basis,"material":[m],
-                          "pipeline":{"pass_sw":0,"failed_rework":0}}
+                          "pipeline":{"pending_inspection":float(pending),"pass_sw":0,"failed_rework":0}}
 
         return {"bom_item_id":item.pk,"optional":bool(getattr(item,"optional",False)),"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
                 "required":float(required),"available":float(available),"shortage":float(shortage),"board_like":board_like,
@@ -1344,6 +1413,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "Pass SW is the board-ready state and counts as usable finished PCBA stock, including completed Build Outputs.",
                 "Intermediate-status Build Outputs remain WIP; only the still-required Part Test Template stages are forecast.",
                 "Testing is Part-specific and mandatory-template-driven: optional/admin templates do not create forecast work, and a Part with no mandatory tests receives no test time.",
+                "Usable stock status alone is not Ready when mandatory tests exist: the specific StockItem must have passing results for every mandatory template; missing results are scheduled as inspection/testing.",
                 "Assembled PCBAs retain status-aware WIP and failure handling: failed assembled-board tests use rework then restart all mandatory testing from VI; Failed VI -BARE remains a replacement/remanufacture path.",
                 "BO-created incomplete outputs do not count as ready merely because they exist; staged WIP is forecast from its actual passed test stage.",
                 "Ordinary BOM material uses InvenTree native variant-aware available stock and usable stock counts regardless of storage location.",

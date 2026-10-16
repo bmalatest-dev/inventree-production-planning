@@ -1,33 +1,11 @@
-# v3.6.2
-
-- Fix board-specific timing override sections so each board is collapsed by default and independently expandable.
-- Keep the plan-wide timing table visible while the planning-times editor is open.
-- Use native collapsible sections for robust rendering.
-- Rename the frontend static asset for this release to prevent a cached v3.6.1 script from being reused.
-- No planning calculation changes and no migration.
-
-# v3.6.1
-
-- Board-specific timing overrides are now collapsed by default for a cleaner planning-times editor.
-- Each board can be expanded independently; collapsed rows show the number of active overrides.
-- Plan-wide **This plan — all boards** timing overrides remain visible as before.
-- No planning calculation changes and no migration required.
-
-# v3.6.0
-
-- Added scenario-only **Adjust Planning Times** editor.
-- Supports plan-wide timing overrides and per-board overrides.
-- Recalculate Plan reruns the forecast and Gantt without changing persistent plugin settings.
-- Board-specific overrides take precedence over plan-wide overrides, which take precedence over configured plugin defaults.
-- Existing WIP continues from its proven production stage using the applicable board timing.
-
-## 3.4.1
-- Move Gantt generation to an explicit **Generate Gantt** action after a Production Plan is calculated.
-- Support Gantt generation for a single Build Order.
-- Multi-build plans render all selected Build Orders on the same Gantt in planning-priority order.
-- Gantt remains a forecast visualization only and does not allocate stock or reserve capacity.
-
 # Changelog
+
+## 3.9.0
+- Stock status alone no longer makes testable material Ready. A specific StockItem must pass every mandatory Part Test Template.
+- Usable-status stock with missing mandatory test results is forecast through the required inspection/testing before becoming Ready.
+- Optional/admin Test Templates remain excluded.
+- Ready requirements are collapsed by default so Blocked / WIP / Forecast requirements remain prominent.
+- Preserves validated PCBA WIP, rework, and Failed VI `-BARE` behavior from v3.7.1/v3.8.0.
 
 ## 3.4.1
 - Add an inline **Production Gantt (Forecast)** to multi-build planning.
@@ -135,7 +113,7 @@
 - Added Rework to scenario-wide and board-specific planning-time overrides and to Gantt activity detail.
 - No database migration required.
 
-## v3.8.0
+## v3.9.0
 - Split manufactured-subassembly timing into PCBA assembly (10 business days default) and generic/mechanical assembly (20 business days default).
 - Added scenario-wide and Part-specific Generic / mechanical assembly timing overrides.
 - Manufactured Parts now schedule only mandatory Part Test Templates; optional/admin templates do not create forecast work.
