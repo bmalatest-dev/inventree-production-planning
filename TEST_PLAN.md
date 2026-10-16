@@ -1,3 +1,9 @@
+## v3.9.12 unknown mandatory test regression
+
+- BO-0177 / 1427N2-PV: 20 OK stock items with required RandomTest and no results must schedule 20h RandomTest at the 1h/item default.
+- Adjust Planning Times must show Other / unknown mandatory test = 1h/item and expose RandomTest under 1427N2-PV for a part/test-specific override.
+- Existing known test timings remain unchanged.
+
 ## v3.9.11 focused acceptance
 1. BO-0177 / S-20415-PV: full open PO coverage with past ETA must show LATE / REQUIRES ATTENTION and ETA REQUIRED, not generic UNSCHEDULED.
 2. BO-0177 / S-18408-PV: partial PO coverage must remain BLOCKED / UNSCHEDULED.

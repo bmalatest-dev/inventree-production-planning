@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.8 production planning with canonical inherited-test ordering and mutually exclusive Ready/WIP quantities."
+    DESCRIPTION = "V3.9.12 production planning with configurable fallback timing for unknown mandatory tests."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -79,6 +79,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         "EEPROM_MIN": {"name": _("EEPROM programming/test minutes per board"), "default": 15, "validator": int},
         "TX_WAVEFORM_MIN": {"name": _("TX Waveform Testing minutes per board"), "default": 15, "validator": int},
         "SW_MIN": {"name": _("Software Test minutes per board"), "default": 120, "validator": int},
+        "UNKNOWN_TEST_MIN": {"name": _("Other / unknown mandatory test minutes per item"), "default": 60, "validator": int},
         "FINAL_ASSEMBLY_MIN": {"name": _("Final assembly minutes per finished unit"), "default": 240, "validator": int},
         "FAILED_VI_REPLACEMENT_DAYS": {"name": _("Failed VI replacement fabrication lead time (calendar days)"), "default": 28, "validator": int},
         "CONFORMAL_COATING_DAYS": {"name": _("Conformal coating lead time (calendar days)"), "default": 14, "validator": int},
@@ -116,7 +117,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v3911.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v3912.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -143,6 +144,11 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         try:
             return max(0, int(self.get_setting(key) or 0))
         except Exception:
+            if str(key).startswith("UNKNOWN_TEST_") and str(key).endswith("_MIN"):
+                try:
+                    return max(0, int(self.get_setting("UNKNOWN_TEST_MIN") or 60))
+                except Exception:
+                    return 60
             return 0
 
     def timing_overrides_from_request(self, request):
@@ -926,7 +932,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "supply_attention_reason":po.get("attention_reason"),
                 "oldest_overdue_date":iso(po.get("oldest_stale")),
                 "overdue_days":((date.today()-po.get("oldest_stale")).days if po.get("oldest_stale") else None),
-                "po_full_coverage":bool(shortage>0 and D(po.get("open",0))>=shortage)}
+                "po_full_coverage":bool(shortage>0 and D(po.get("open",0))>=shortage),
+                "test_phases":[{"stage":st,"label":label,"setting":key,"template_id":tid} for st,label,key,tid in self.required_board_phases(part)]}
         if replacement:
             result.update({
                 "constraint":"failed_vi_replacement" if failed_vi > 0 else "bare_fabrication_fallback",
@@ -1200,14 +1207,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if key.startswith("eeprom"): return "EEPROM_MIN", "EEPROM"
         if key.startswith("txwaveform"): return "TX_WAVEFORM_MIN", "TX Waveform Testing"
         if key.startswith("softwaretest") or key.startswith("swtest") or key == "sw": return "SW_MIN", "Software Test"
-        return None, str(getattr(template, "test_name", None) or str(template))
+        label=str(getattr(template, "test_name", None) or str(template))
+        return f"UNKNOWN_TEST_{int(template.pk)}_MIN", label
 
     def required_board_phases(self, part):
         """Return each effective mandatory production test as an ordered phase.
 
         Multiple tests in the same family remain distinct (e.g. Bring Up Stage 1
-        and Bring Up Stage 2). Unknown mandatory tests are retained with zero timing
-        rather than being mistaken for completed work.
+        and Bring Up Stage 2). Unknown mandatory tests use the configurable fallback timing while retaining
+        their actual InvenTree Test Template name in the production plan.
         """
         out=[]
         for idx, template in enumerate(self.effective_test_templates(part), start=1):

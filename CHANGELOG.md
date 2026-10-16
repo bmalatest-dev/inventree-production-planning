@@ -1,3 +1,10 @@
+## v3.9.12
+
+- Unknown mandatory Test Templates now default to 60 minutes per item instead of zero time.
+- Forecasts retain the actual InvenTree Test Template name (for example, RandomTest).
+- Added configurable `Other / unknown mandatory test` timing and per-part/test scenario overrides.
+- No migration required.
+
 ## v3.9.11
 - Distinguishes full overdue PO coverage from true unscheduled supply: overdue full coverage is **LATE / REQUIRES ATTENTION** with **ETA REQUIRED**, while partial/no coverage remains blocked.
 - Multi-build Build Forecasts now include a per-BO collapsible **Ready Requirements (N)** section so later-priority BOs have the same requirement visibility as the first BO.
