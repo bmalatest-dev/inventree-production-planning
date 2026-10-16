@@ -1,6 +1,13 @@
+## v3.9.2
+
+- Fix mandatory PCB test-stage discovery for qualified template names such as `Bring Up Stage 1`.
+- Pass BU WIP now retains later mandatory stages such as EEPROM and Software Test when those templates are present.
+- Rework full-retest paths use the same corrected mandatory-stage discovery.
+- Generic/mechanical finished-stock readiness behavior from v3.9.1 is unchanged.
+
 # Changelog
 
-## 3.9.1
+## 3.9.2
 - Count completed non-PCBA build outputs as ready stock when InvenTree marks `is_building = false`.
 - Completed generic/mechanical outputs with no mandatory tests are ready immediately when their stock status is usable.
 - Completed generic/mechanical outputs with mandatory tests still require passing results for every mandatory template.

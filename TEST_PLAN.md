@@ -1,3 +1,10 @@
+## v3.9.2 regression checks
+
+- BO-0136 / FR2TS: 39 Pass BU WIP must not report `0h remaining test` when later mandatory templates exist. Confirm Software Test is included; include EEPROM only if FR2TS has that mandatory template.
+- BO-0136 failed/rework unit: 2 business days rework, then all mandatory FR2TS tests from VI; must not report `0h full retest` when templates exist.
+- BO-0133: preserve 20 Pass SW + staged WIP + assembled-board rework behavior.
+- BO-0177: preserve generic/mechanical stock behavior; completed fan stock with no mandatory tests remains Ready, while CHAS with mandatory VI and no pass remains inspection WIP.
+
 # Production Planning v3.4.1 Test Plan
 
 ## Primary regression: BO-0182 / FR2TSC
@@ -154,7 +161,7 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - Production Requirements must show actionable rows first and place fully Ready rows under the collapsed `Ready Requirements` section.
 
 
-## v3.9.1 completed generic-output stock
+## v3.9.2 completed generic-output stock
 1. BO-0177 / PVFAN-40mmx28mm-4P-26CFM-65cm-NIL-1-PV: with at least 20 completed usable outputs and no mandatory tests, Need 20 must report Ready 20, WIP 0, READY; no generic assembly forecast.
 2. Create/locate an incomplete output for the same generic Part: it must remain WIP and must not become Ready merely because its StockItem exists.
 3. CHAS-TR3-RUG-PV: completed/usable stock with mandatory VI but no VI pass must remain pending inspection; after VI passes it becomes Ready.

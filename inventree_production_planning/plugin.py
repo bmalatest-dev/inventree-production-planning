@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.1 production planning with completed generic-output stock readiness."
+    DESCRIPTION = "V3.9.2 production planning with completed generic-output stock readiness."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -115,7 +115,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v391.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v392.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -1079,9 +1079,34 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "eeprom": 4, "eepromflashed": 4, "eepromprogramming": 4,
             "softwaretest": 5, "sw": 5, "swtest": 5,
         }
+        def stage_for_template(name):
+            """Map real-world template labels to planner stages.
+
+            Per Vices templates can carry qualifiers such as ``Stage 1`` (for
+            example ``Bring Up Stage 1``).  Exact alias lookup therefore is not
+            sufficient: preserve the strict known-stage vocabulary, but allow
+            harmless suffix / qualifier text around those known names.
+            """
+            key=self.norm(name)
+            if key in aliases:
+                return aliases[key]
+
+            # Longest / most-specific names first to avoid accidental matches.
+            if "softwaretest" in key or key.startswith("swtest"):
+                return 5
+            if "eeprom" in key:
+                return 4
+            if "bringup" in key:
+                return 3
+            if "pressfit" in key:
+                return 2
+            if "visualinspection" in key or key.startswith("boardvi"):
+                return 1
+            return None
+
         found=set()
         for name in self.mandatory_test_templates(part):
-            stage=aliases.get(self.norm(name))
+            stage=stage_for_template(name)
             if stage:
                 found.add(stage)
         return [(stage, *phases[stage]) for stage in sorted(found)]
