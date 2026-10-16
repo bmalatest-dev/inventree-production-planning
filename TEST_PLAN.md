@@ -1,4 +1,14 @@
-# v3.9.8 focused regression
+# v3.9.9 focused regression
+
+BO-0133 / TR8R:
+- Need 22, Ready 21, WIP 1.
+- TR8R-1V has VI PASS and Bring Up FAIL.
+- Forecast the one WIP board as 2 business days Rework, then full mandatory retest from VI: VI 1.5h + Bring Up 1h + EEPROM 0.25h + Software Test 2h = 4.75h.
+- Must not report Software Test WIP + 0h.
+- Must not add PCBA assembly.
+- Ready and WIP quantities remain mutually exclusive.
+
+# v3.9.9 focused regression
 
 ## BO-0133 — TR8R
 - Effective mandatory workflow must be ordered: Visual Inspection → Bring Up → EEPROM → Software Test.

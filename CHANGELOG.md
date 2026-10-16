@@ -1,4 +1,11 @@
-## v3.9.8
+## v3.9.9
+
+- Fix final mandatory-test stage being double-counted as both Ready stock and WIP.
+- Ready stock is now removed from the final-stage WIP pool before stage claims.
+- This allows unresolved failed assembled boards to reach the rework path instead of being hidden by already-ready boards.
+- BO-0133 regression: 21 Ready + 1 Failed BU must forecast 1 Rework -> full retest from VI, never Software Test WIP + 0h.
+
+## v3.9.9
 
 - Fix inherited/variant mandatory-test ordering so recognized production tests follow the canonical workflow: VI → Press Fit → Bring Up Stage 1 / Bring Up → EEPROM → Bring Up Stage 2 → TX Waveform → Software Test.
 - Preserve distinct mandatory tests while continuing to de-duplicate equivalent `TEMPLATE` tests in favor of the real/non-TEMPLATE definition.

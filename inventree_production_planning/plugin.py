@@ -116,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v398.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v399.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -1264,8 +1264,17 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # current stage. Unstarted BO outputs are intentionally NOT treated as assembled.
         claimed_staged=D(0)
         phases=self.required_board_phases(part)
+        final_stage=max((st for st, _label, _key, _tid in phases), default=0)
         for stage,label,_key,_tid in reversed(phases):
-            qty=self.claim_wip(part,stage,ex.get(stage,D(0)),need-claimed_staged,pool=pool)
+            # ``exact[final_stage]`` contains fully qualified Ready stock as well as
+            # any true WIP recorded at that stage. Ready stock was already deducted
+            # from ``required_shortage`` and must never be claimed again as WIP.
+            # Reusing it here caused BO-0133's one failed board to be hidden behind
+            # a Ready board and reported as "Software Test WIP + 0h".
+            stage_available=D(ex.get(stage,D(0)))
+            if stage == final_stage:
+                stage_available=max(D(0), stage_available-D(state["finished"]))
+            qty=self.claim_wip(part,stage,stage_available,need-claimed_staged,pool=pool)
             claimed_staged += qty
             if qty>0:
                 hrs=self.remaining_stage_hours(stage,qty,part)
