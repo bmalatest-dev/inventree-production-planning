@@ -101,3 +101,8 @@ Board-specific timing sections are collapsed by default and can be expanded inde
 
 
 In v3.6.2, board-specific timing tables are native collapsed sections; the plan-wide table remains visible. The frontend asset is versioned to avoid stale browser caching.
+
+### Status-aware board outputs and Part-specific test flows (v3.7.0)
+For a selected board Build Order, Production Planning now evaluates the BO's own output StockItems before forecasting new production. `Pass SW` outputs are ready immediately. Outputs at intermediate states such as `Pass VI`, `Pass BU`, or `EEPROM Pass` are WIP and only receive the remaining required test time. Failed, rework, quarantined, or damaged outputs do not count as ready.
+
+The required board-test sequence is driven by the Part's InvenTree Test Templates. Recognized production stages are Visual Inspection, Press Fit, Bring Up, EEPROM, and Software Test. A stage that is not configured for the Part is omitted from the forecast, Gantt, and board-specific timing editor. For example, a board such as TR8L with no Press Fit test template does not receive Press Fit time. If no recognizable production test templates exist, the plugin falls back to the full legacy sequence to avoid silently omitting work.

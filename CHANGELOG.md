@@ -116,3 +116,12 @@
 - Added Expand All / Collapse All controls while keeping the default Gantt compact.
 - Existing WIP begins at its proven production stage rather than displaying already-completed phases.
 - Gantt remains a planning visualization only and does not allocate stock or reserve capacity.
+
+## 3.7.0
+- Completed Build Outputs at **Pass SW** now satisfy the selected board Build Order quantity before any future production is forecast.
+- Intermediate completed/incomplete Build Outputs remain WIP and are forecast from their current passed stage rather than restarted from assembly.
+- Selected board BO output state is scoped to that BO, preventing unrelated finished warehouse stock from falsely completing the BO.
+- Board test flow is now derived from the Part's Test Templates. VI, Press Fit, Bring-Up, EEPROM, and Software Test are included only when configured for that Part; legacy parts with no recognizable templates retain the full historical flow as a safe fallback.
+- Gantt segments, remaining-test hours, readiness text, and board-specific timing overrides use the same Part-specific test flow.
+- Fully satisfied board BOs display **READY / READY NOW** rather than a future forecast.
+- No database migration required.

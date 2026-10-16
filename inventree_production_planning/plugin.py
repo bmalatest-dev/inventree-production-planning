@@ -9,7 +9,7 @@ from plugin import InvenTreePlugin
 from plugin.mixins import SettingsMixin, UrlsMixin, UserInterfaceMixin
 from build.models import Build, BuildItem
 from order.models import PurchaseOrderLineItem
-from part.models import BomItem
+from part.models import BomItem, PartTestTemplate
 from stock.models import StockItem
 from stock.status_codes import StockStatus
 
@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.6.2 production planning with collapsible board-specific timing overrides and expandable forecast Gantt."
+    DESCRIPTION = "V3.7.0 production planning with status-aware completed outputs, WIP stages, and part-specific test flows."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -113,7 +113,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v362.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v370.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -245,7 +245,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         except Exception:
             return logical not in (50, 75, 100)
 
-    def stock_state(self, part):
+    def stock_state(self, part, build_ids=None):
         """Separate finished usable stock from BO-created incomplete outputs.
 
         BO output items are WIP regardless of when they were created. They become
@@ -258,12 +258,20 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         finished = D(0)
         exact = {0:D(0), 1:D(0), 2:D(0), 3:D(0), 4:D(0), 5:D(0)}
         bad = D(0)
+        build_ids = {int(x) for x in (build_ids or []) if x is not None}
+        restrict_outputs = bool(build_ids)
         for item in self.stock(part):
             qty = D(item.quantity)
             label = self.status_label(item, custom)
             key = self.norm(label)
             stage = self.STATUS_ALIASES.get(key)
             output = self.is_build_output(item)
+            if restrict_outputs:
+                # For a selected board BO, only that BO's own outputs may satisfy
+                # its production quantity. Unrelated warehouse stock must not make
+                # a BO appear complete.
+                if not output or int(getattr(item, "build_id", 0) or 0) not in build_ids:
+                    continue
             if output:
                 if stage == 5:
                     finished += qty
@@ -923,26 +931,52 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         unresolved=[b for b in blockers if not b.get("ready_date")]
         return (None if unresolved else latest), blockers, unresolved
 
+    def required_board_phases(self, part):
+        """Return the production test phases configured for this Part.
+
+        Part Test Templates are the source of truth for whether a board actually
+        requires Press Fit, VI, BU, EEPROM or SW. If a legacy board has no
+        recognizable templates, retain the historical full test flow as a safe
+        fallback rather than silently omitting work.
+        """
+        phases = {
+            1: ("Board VI", "BOARD_VI_MIN"),
+            2: ("Press Fit", "PRESS_FIT_MIN"),
+            3: ("Bring-Up", "BU_MIN"),
+            4: ("EEPROM", "EEPROM_MIN"),
+            5: ("Software Test", "SW_MIN"),
+        }
+        aliases = {
+            "visualinspection": 1, "vi": 1, "boardvi": 1,
+            "pressfit": 2, "pressfitinspection": 2,
+            "bringup": 3, "bu": 3,
+            "eeprom": 4, "eepromflashed": 4, "eepromprogramming": 4,
+            "softwaretest": 5, "sw": 5, "swtest": 5,
+        }
+        found = set()
+        try:
+            for name in PartTestTemplate.objects.filter(part=part).values_list("test_name", flat=True):
+                key = self.norm(name)
+                if key in aliases:
+                    found.add(aliases[key])
+        except Exception:
+            found = set()
+        if not found:
+            found = set(phases)
+        return [(stage, *phases[stage]) for stage in sorted(found)]
+
     def remaining_stage_hours(self, stage, qty, part=None):
         q=D(qty)
         mins=D(0)
-        if stage < 1: mins += D(self.setting("BOARD_VI_MIN", part))*q
-        if stage < 2: mins += D(self.setting("PRESS_FIT_MIN", part))*q
-        if stage < 3: mins += D(self.setting("BU_MIN", part))*q
-        if stage < 4: mins += D(self.setting("EEPROM_MIN", part))*q
-        if stage < 5: mins += D(self.setting("SW_MIN", part))*q
+        for target, _label, key in self.required_board_phases(part):
+            if stage < target:
+                mins += D(self.setting(key, part))*q
         return mins / D(60)
 
     def board_test_segments(self, start, stage, qty, prefix="", part=None):
         """Return dated shop-floor test phases from the proven current stage."""
         q=D(qty); cursor=day(start); out=[]
-        phases=[
-            (1,"Board VI","BOARD_VI_MIN"),
-            (2,"Press Fit","PRESS_FIT_MIN"),
-            (3,"Bring-Up","BU_MIN"),
-            (4,"EEPROM","EEPROM_MIN"),
-            (5,"Software Test","SW_MIN"),
-        ]
+        phases=self.required_board_phases(part)
         for target,label,key in phases:
             if stage >= target: continue
             hours=D(self.setting(key, part))*q/D(60)
@@ -965,13 +999,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 out.append({"label":f"{label} — Incoming VI","start":iso(receipt),"end":iso(ready),"kind":"inspection","hours":float(D(b.get("inspection_hours")))})
         return out
 
-    def board_forecast(self, part, required_shortage, builds, pool=None):
-        state=self.stock_state(part); ex=state["exact"]
+    def board_forecast(self, part, required_shortage, builds, pool=None, output_builds=None):
+        output_ids=[getattr(b, "pk", b) for b in (output_builds or [])]
+        state=self.stock_state(part, build_ids=output_ids if output_ids else None); ex=state["exact"]
         # available_qty already includes Pass SW outputs, so shortage is only what
         # still has to become ready.
         need=max(D(0),D(required_shortage))
         result={"pipeline":{"unstarted_output":float(ex[0]),"pass_vi":float(ex[1]),"pass_press_fit":float(ex[2]),"pass_bu":float(ex[3]),"eeprom_pass":float(ex[4]),"pass_sw":float(ex[5]),"failed_rework":float(state["failed_rework"])},
-                "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[],"schedule_segments":[]}
+                "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[],"schedule_segments":[],
+                "applicable_phases":[{"stage":st,"label":label,"setting":key} for st,label,key in self.required_board_phases(part)]}
         if need<=0:
             result["forecast_ready"]=iso(date.today()); result["basis"]="Finished / Pass SW stock covers the requirement."; return result
         today=date.today(); candidates=[]
@@ -1000,7 +1036,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 segs=self.material_segments(blockers)
                 segs.append({"label":"PCBA assembly","start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":self.setting("PCBA_ASSEMBLY_DAYS", part)})
                 segs.extend(test_segs)
-                candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS')} business days assembly + {float(test_hours):g}h VI/Press Fit/BU/EEPROM/SW",segs))
+                phase_names='/'.join(label.replace('Board ', '') for _st,label,_key in self.required_board_phases(part)); candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS', part)} business days assembly + {float(test_hours):g}h {phase_names}",segs))
             elif unresolved:
                 names=[]
                 for blocker in unresolved:
@@ -1179,20 +1215,23 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def board_build_output_plan(self, build, part, pool=None, priority=None):
         """Plan a selected PCBA Build Order from its BOM through board test stages."""
         qty=max(D(0),D(getattr(build,"quantity",0)))
-        # A selected BO is the production demand itself. Existing finished stock is
-        # not used to erase that demand; however staged WIP belonging to the board
-        # can accelerate the forecast and leaf material is shared by priority.
-        forecast=self.board_forecast(part,qty,[build],pool=pool)
+        # Completed Pass SW outputs belonging to this BO satisfy its production
+        # quantity first. Intermediate-status outputs remain WIP and are forecast
+        # only through the tests still required for this specific Part.
+        own_state=self.stock_state(part, build_ids=[build.pk])
+        ready_now=min(qty, own_state["finished"])
+        remaining=max(D(0), qty-ready_now)
+        forecast=self.board_forecast(part,remaining,[build],pool=pool,output_builds=[build])
         unresolved=[] if forecast and forecast.get("forecast_ready") else [self.part_label(part)]
         ready=day((forecast or {}).get("forecast_ready"))
         target=day(getattr(build,"target_date",None))
-        status="BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
+        status="READY" if remaining<=0 else ("BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST"))
         row={"bom_item_id":None,"optional":False,"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),
-             "required":float(qty),"available":0.0,"shortage":float(qty),"board_like":True,"child_builds":[],"forecast":forecast,"build_output":True}
+             "required":float(qty),"available":float(ready_now),"shortage":float(remaining),"board_like":True,"child_builds":[],"forecast":forecast,"build_output":True}
         return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(qty),"target_date":iso(target)},
                 "priority":priority,"requirements":[row],"optional_requirements":[],"selected_optional_quantities":{},
                 "summary":{"material_ready":None,"forecast_ready":iso(ready),"critical_requirement":self.part_label(part),
-                           "critical_display":f"Manufacture and test {self.part_label(part)}","unresolved":unresolved,"status":status,"final_assembly_hours":0.0,"board_build_output":True},
+                           "critical_display":f"{self.part_label(part)} ready from completed Pass SW outputs" if remaining<=0 else f"Manufacture and test {self.part_label(part)}","unresolved":unresolved,"status":status,"final_assembly_hours":0.0,"board_build_output":True},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},"assumptions":self.planning_assumptions()}
 
     def coated_build_output_plan(self, build, part, pool=None, priority=None):
@@ -1234,7 +1273,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 f"Undated / Failed-VI -BARE replacement fabrication fallback: {self.setting('FAILED_VI_REPLACEMENT_DAYS')} calendar days when no earlier credible PO fully covers the shortage."
             ],
             "Inventory & Material Assumptions":[
-                "Pass SW is the board-ready state and counts as usable finished PCBA stock.",
+                "Pass SW is the board-ready state and counts as usable finished PCBA stock, including completed Build Outputs.",
+                "Intermediate-status Build Outputs remain WIP; only the still-required Part Test Template stages are forecast.",
+                "Board test stages are Part-specific: a stage such as Press Fit is omitted when that Part has no matching Test Template.",
                 "BO-created incomplete outputs do not count as ready merely because they exist; staged WIP is forecast from its actual passed test stage.",
                 "Ordinary BOM material uses InvenTree native variant-aware available stock and usable stock counts regardless of storage location.",
                 "Existing child BO BuildLines are authoritative for allocated / consumed / unallocated material state.",

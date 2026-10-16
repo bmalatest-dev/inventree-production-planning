@@ -80,3 +80,31 @@
 5. Enter an override, collapse the board, reopen it, and confirm the value remains.
 6. Recalculate and confirm the override changes the forecast while unrelated boards retain their timings.
 7. Refresh the page after installing v3.6.2 and confirm the collapsed UI is present without clearing the browser cache.
+
+## v3.7.0 acceptance tests
+
+### BO-0131 — all outputs finished
+- Build quantity: 110 TR8L.
+- Precondition: all 110 BO outputs are current status `Pass SW`.
+- Expected: Need 110, Ready 110, WIP 0, Status READY, Forecast Product Ready `READY NOW`.
+- Expected: no future PCBA assembly or board-test Gantt work is generated for the satisfied quantity.
+
+### BO-0136 — completed-output classification
+- Inspect the 40 FR2TS completed outputs and compare their current stock statuses with Production Planning.
+- Expected: Pass SW outputs count Ready; intermediate statuses count WIP at their actual stage; failed/rework/quarantine outputs do not count Ready.
+- This remains an explicit regression test before production deployment.
+
+### TR8L — Part-specific stages
+- Test Templates include Visual Inspection, Bring Up, EEPROM Flashed, and Software Test, with no Press Fit test.
+- Expected: TR8L forecast/Gantt/timing overrides omit Press Fit.
+- Pass VI TR8L WIP should forecast Bring-Up -> EEPROM -> Software Test only.
+- Pass BU TR8L WIP should forecast EEPROM -> Software Test only.
+- Pass SW TR8L should require no further test time.
+
+### Mixed-stage quantity test
+Create or identify a board BO with quantities distributed across Pass SW, Pass BU, Pass VI, and untested assembled output.
+- Pass SW quantity is Ready.
+- Pass BU quantity receives only later configured stages.
+- Pass VI quantity receives only later configured stages.
+- Untested assembled output receives all configured board-test stages.
+- Total forecast demand must not exceed the BO quantity.
