@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.7 production planning with mandatory-first TEMPLATE de-duplication and restored failed-board retest workflows."
+    DESCRIPTION = "V3.9.8 production planning with canonical inherited-test ordering and mutually exclusive Ready/WIP quantities."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -116,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v397.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v398.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -1135,6 +1135,33 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         except Exception:
             return []
 
+        # Variant inheritance can split a workflow across parent and child Parts.
+        # Database/template PK order is therefore not a reliable production order
+        # (e.g. inherited Bring Up / EEPROM / SW followed by child VI). Re-order
+        # recognized production tests into their canonical manufacturing sequence
+        # while retaining distinct tests such as Bring Up Stage 1 and Stage 2.
+        def workflow_rank(template, original_index):
+            key=self.workflow_test_identity(template)
+            if key.startswith("visualinspection") or key in ("vi", "boardvi"):
+                return (10, original_index)
+            if key.startswith("pressfit"):
+                return (20, original_index)
+            if key.startswith("bringup"):
+                # Stage 2 belongs after EEPROM; Stage 1 / generic Bring Up before it.
+                if "stage2" in key or key.endswith("2"):
+                    return (50, original_index)
+                return (30, original_index)
+            if key.startswith("eeprom"):
+                return (40, original_index)
+            if key.startswith("txwaveform"):
+                return (60, original_index)
+            if key.startswith("softwaretest") or key.startswith("swtest") or key == "sw":
+                return (70, original_index)
+            # Unknown mandatory tests must not disappear. Keep them in stable
+            # inherited order immediately before final software qualification.
+            return (65, original_index)
+
+        ordered=[t for _i,t in sorted(enumerate(ordered), key=lambda x: workflow_rank(x[1], x[0]))]
         return ordered
 
     def mandatory_test_templates(self, part):
@@ -1219,7 +1246,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # available_qty already includes Pass SW outputs, so shortage is only what
         # still has to become ready.
         need=max(D(0),D(required_shortage))
-        result={"pipeline":{"unstarted_output":float(ex.get(0,D(0))),"pass_vi":float(ex.get(1,D(0))),"pass_press_fit":float(ex.get(2,D(0))),"pass_bu":float(ex.get(3,D(0))),"eeprom_pass":float(ex.get(4,D(0))),"pass_sw":float(ex.get(5,D(0))),"failed_rework":float(state["failed_rework"])},
+        # ``exact`` includes finished stock at the final mandatory-test stage.
+        # Keep Ready and WIP mutually exclusive for reporting: WIP is only stock
+        # which still requires work, including failed boards awaiting rework.
+        staged_total=sum((D(v) for v in ex.values()), D(0))
+        wip_total=max(D(0), staged_total-D(state["finished"])) + D(state["failed_rework"])
+        result={"pipeline":{"unstarted_output":float(ex.get(0,D(0))),"pass_vi":float(ex.get(1,D(0))),"pass_press_fit":float(ex.get(2,D(0))),"pass_bu":float(ex.get(3,D(0))),"eeprom_pass":float(ex.get(4,D(0))),"pass_sw":float(ex.get(5,D(0))),"failed_rework":float(state["failed_rework"]),"wip_total":float(wip_total)},
                 "ready_now":float(state["finished"]),"need_after_ready":float(need),"forecast_ready":None,"basis":"","material":[],"schedule_segments":[],
                 "applicable_phases":[{"stage":st,"label":label,"setting":key,"template_id":tid} for st,label,key,tid in self.required_board_phases(part)]}
         if need<=0:

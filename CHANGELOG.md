@@ -1,3 +1,10 @@
+## v3.9.8
+
+- Fix inherited/variant mandatory-test ordering so recognized production tests follow the canonical workflow: VI → Press Fit → Bring Up Stage 1 / Bring Up → EEPROM → Bring Up Stage 2 → TX Waveform → Software Test.
+- Preserve distinct mandatory tests while continuing to de-duplicate equivalent `TEMPLATE` tests in favor of the real/non-TEMPLATE definition.
+- Fix Production Requirements WIP reporting so Ready and WIP are mutually exclusive. Failed assembled boards are included in WIP/rework, while fully qualified boards are counted only as Ready.
+- Preserve assembled-board failure behavior: rework lead time followed by the complete mandatory test workflow, without repeating PCBA assembly.
+- No database migration required.
 ## v3.9.7
 
 - Filter optional Test Templates before semantic TEMPLATE de-duplication so an optional duplicate can never suppress a mandatory inherited production test.

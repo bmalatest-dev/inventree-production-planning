@@ -129,3 +129,7 @@ Production Planning uses the ordered mandatory InvenTree Test Templates applicab
 
 ### v3.9.7 TEMPLATE test de-duplication
 Legacy template/variant families may expose both a placeholder test such as `TEMPLATE Bring Up` and the concrete `Bring Up` test. Production Planning treats those as the same production operation and keeps the non-TEMPLATE definition. Existing assembled StockItems are evaluated against this de-duplicated workflow, so duplicate inherited template tests cannot force completed/WIP PCB outputs back through PCBA assembly.
+
+### v3.9.8 canonical workflow ordering and Ready/WIP accounting
+
+Variant inheritance can place child and parent test templates in a database order which is not the actual production sequence. v3.9.8 orders recognized mandatory production tests by workflow semantics after inheritance and TEMPLATE de-duplication. Production Requirements also reports Ready and WIP as mutually exclusive quantities; failed assembled boards count as WIP/rework and follow rework plus the full mandatory retest sequence without repeating PCBA assembly.
