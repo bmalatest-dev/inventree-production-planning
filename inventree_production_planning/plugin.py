@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.0 production planning with stock-item test-aware material readiness."
+    DESCRIPTION = "V3.9.1 production planning with completed generic-output stock readiness."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -115,7 +115,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v390.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v391.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -220,6 +220,14 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     def stock(self, part):
         qs = StockItem.objects.filter(part=part, quantity__gt=0)
         fields = ["pk", "part_id", "quantity", "status", "status_custom_key"]
+        # is_building distinguishes an incomplete BO output from completed stock.
+        # A completed generic assembly with no mandatory tests can be ready even
+        # when it retains its originating build link.
+        try:
+            StockItem._meta.get_field("is_building")
+            fields.append("is_building")
+        except Exception:
+            pass
         # StockItem.build is the InvenTree link between a BO and its output item.
         try:
             StockItem._meta.get_field("build")
@@ -283,9 +291,30 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 elif "fail" in key or "rework" in key or "quarantine" in key:
                     bad += qty
                 else:
-                    # An output may be created at any time; creation alone is not
-                    # evidence that assembly or testing has happened.
-                    exact[0] += qty
+                    # BO output creation alone is never proof of completion.  But
+                    # InvenTree explicitly clears is_building when an output is
+                    # completed.  For non-PCBA manufactured parts, completed output
+                    # stock is therefore eligible for readiness: no mandatory tests
+                    # means ready immediately; mandatory tests still have to pass.
+                    incomplete = bool(getattr(item, "is_building", True))
+                    if not incomplete and not self.is_pcba_part(part):
+                        templates = self.mandatory_test_templates(part)
+                        if not templates:
+                            finished += qty
+                        else:
+                            test_state = self.stock_item_mandatory_test_state(item, part)
+                            if test_state == "pass":
+                                finished += qty
+                                phases = self.required_board_phases(part)
+                                if phases:
+                                    exact[max(st for st, _label, _key in phases)] += qty
+                            elif test_state == "failed":
+                                bad += qty
+                            else:
+                                exact[0] += qty
+                    else:
+                        # Incomplete output, or a PCBA without a proven test stage.
+                        exact[0] += qty
             else:
                 # Non-output stock can also carry Failed VI / rework / quarantine
                 # states. Such stock is physical inventory but is not usable supply.

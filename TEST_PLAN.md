@@ -152,3 +152,10 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 - Mixed stock test state must be quantity-aware (e.g. 10 passed + 5 untested for Need 15 => 10 Ready + 5 inspection WIP).
 - Recheck BO-0133 and BO-0136 to confirm assembled-board stage and rework behavior is unchanged.
 - Production Requirements must show actionable rows first and place fully Ready rows under the collapsed `Ready Requirements` section.
+
+
+## v3.9.1 completed generic-output stock
+1. BO-0177 / PVFAN-40mmx28mm-4P-26CFM-65cm-NIL-1-PV: with at least 20 completed usable outputs and no mandatory tests, Need 20 must report Ready 20, WIP 0, READY; no generic assembly forecast.
+2. Create/locate an incomplete output for the same generic Part: it must remain WIP and must not become Ready merely because its StockItem exists.
+3. CHAS-TR3-RUG-PV: completed/usable stock with mandatory VI but no VI pass must remain pending inspection; after VI passes it becomes Ready.
+4. Recheck BO-0133 and BO-0136 to confirm PCBA Pass SW, staged WIP and rework behavior is unchanged.

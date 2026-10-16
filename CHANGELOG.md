@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.9.1
+- Count completed non-PCBA build outputs as ready stock when InvenTree marks `is_building = false`.
+- Completed generic/mechanical outputs with no mandatory tests are ready immediately when their stock status is usable.
+- Completed generic/mechanical outputs with mandatory tests still require passing results for every mandatory template.
+- Incomplete outputs remain WIP and never become ready merely because a StockItem exists.
+- Preserve PCBA Pass SW / staged WIP / rework behavior unchanged.
+
 ## 3.9.0
 - Stock status alone no longer makes testable material Ready. A specific StockItem must pass every mandatory Part Test Template.
 - Usable-status stock with missing mandatory test results is forecast through the required inspection/testing before becoming Ready.

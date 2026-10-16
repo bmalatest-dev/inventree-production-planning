@@ -116,3 +116,7 @@ The required board-test sequence is driven by the Part's InvenTree Test Template
 
 ### Manufactured assembly timing (v3.9.0)
 Production Planning distinguishes PCB assembly from generic/mechanical assembly. PCBAs retain the configured PCBA assembly lead time. Other manufacturable subassemblies use a configurable 20-business-day generic/mechanical default which can be overridden per planning scenario and per Part. Testing is driven only by mandatory Part Test Templates; Parts without mandatory tests receive no test time. Assembled-PCBA failure/rework behavior remains unchanged.
+
+
+### Completed generic assembly stock (v3.9.1)
+For non-PCBA manufactured parts, Production Planning distinguishes incomplete BO outputs from completed stock using InvenTree `StockItem.is_building`. Completed usable stock satisfies demand first. If the Part has mandatory tests, all mandatory tests must pass before that completed stock is ready. Only the remaining shortage is sent through generic/mechanical assembly. PCBA readiness continues to use the validated Pass SW / WIP-stage rules.
