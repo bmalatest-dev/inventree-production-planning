@@ -128,3 +128,17 @@ Create or identify a board BO with quantities distributed across Pass SW, Pass B
 ### Press Fit applicability regression
 - TR8L (no Press Fit template) must omit Press Fit from forecast, Gantt and board-specific timing stages.
 - A board with a Press Fit Test Template must include Press Fit.
+
+## v3.8.0 acceptance cases
+
+### BO-0177 / generic and mechanical assemblies
+- PVFAN-40mmx28mm-4P-26CFM-65cm-NIL-1-PV has no mandatory test templates: forecast must show Generic / mechanical assembly only, with no VI / Press Fit / BU / EEPROM / SW.
+- Default generic/mechanical assembly duration is 20 business days.
+- Override the fan to 5 business days in Adjust Planning Times and confirm only that Part's forecast moves.
+- For a mechanical Part with mandatory VI only, forecast assembly + VI only. Optional `Failed VI Admin` must not add time.
+- Expand the Gantt and confirm BOM blockers remain visible for manufactured subassemblies.
+
+### Board regression
+- BO-0136 remains stage-aware.
+- BO-0133 remains 20 Pass SW ready + 1 Pass VI continuing remaining mandatory tests + 1 Failed BU using 2 business days rework then full mandatory retest from VI.
+- Failed VI `-BARE` still uses replacement/remanufacture, not assembled-board rework.

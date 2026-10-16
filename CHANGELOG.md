@@ -134,3 +134,12 @@
 - Failed VI on `-BARE` remains a replacement/remanufacture case and continues to use PO coverage or the PCB fabrication fallback.
 - Added Rework to scenario-wide and board-specific planning-time overrides and to Gantt activity detail.
 - No database migration required.
+
+## v3.8.0
+- Split manufactured-subassembly timing into PCBA assembly (10 business days default) and generic/mechanical assembly (20 business days default).
+- Added scenario-wide and Part-specific Generic / mechanical assembly timing overrides.
+- Manufactured Parts now schedule only mandatory Part Test Templates; optional/admin templates do not create forecast work.
+- Parts with no mandatory tests receive no board-test phases or test time.
+- Preserved assembled-PCBA failure handling: 2 business days rework, then restart all mandatory tests from VI.
+- Preserved Failed VI `-BARE` replacement/remanufacture behavior.
+- Mechanical `*-MECH` Build Orders are planned as manufactured outputs rather than final-product assembly.

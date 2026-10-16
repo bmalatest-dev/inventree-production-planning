@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.7.1 production planning with stage-aware WIP and assembled-board rework forecasting."
+    DESCRIPTION = "V3.8.0 production planning with PCBA-aware and generic/mechanical assembly forecasting."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -69,6 +69,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     SETTINGS = {
         "WORK_HOURS_DAY": {"name": _("Working hours per business day"), "default": 8, "validator": int},
         "PCBA_ASSEMBLY_DAYS": {"name": _("PCBA assembly lead time after inspected material is ready (business days)"), "default": 10, "validator": int},
+        "GENERIC_ASSEMBLY_DAYS": {"name": _("Generic / mechanical assembly lead time after material is ready (business days)"), "default": 20, "validator": int},
         "REWORK_DAYS": {"name": _("Assembled-board rework lead time (business days)"), "default": 2, "validator": int},
         "BARE_VI_MIN": {"name": _("-BARE incoming VI minutes per stock item"), "default": 60, "validator": int},
         "MECH_VI_MIN": {"name": _("-MECH incoming VI minutes per stock item requiring VI"), "default": 12, "validator": int},
@@ -114,7 +115,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v371.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v380.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -932,13 +933,41 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         unresolved=[b for b in blockers if not b.get("ready_date")]
         return (None if unresolved else latest), blockers, unresolved
 
-    def required_board_phases(self, part):
-        """Return the production test phases configured for this Part.
+    def mandatory_test_templates(self, part):
+        """Return enabled/required Part Test Templates for *part*.
 
-        Part Test Templates are the source of truth for whether a board actually
-        requires Press Fit, VI, BU, EEPROM or SW. If a legacy board has no
-        recognizable templates, retain the historical full test flow as a safe
-        fallback rather than silently omitting work.
+        Production Planning schedules only mandatory tests. Optional/admin templates
+        (for example Failed VI Admin) never create forecast work. The model field
+        name has varied across InvenTree releases, so inspect the template object
+        defensively while treating an absent required flag as required for backwards
+        compatibility.
+        """
+        out=[]
+        try:
+            for template in PartTestTemplate.objects.filter(part=part):
+                enabled=getattr(template, "enabled", True)
+                if enabled is False:
+                    continue
+                required=getattr(template, "required", None)
+                if required is None:
+                    required=getattr(template, "mandatory", None)
+                if required is False:
+                    continue
+                name=str(getattr(template, "test_name", "") or "").strip()
+                if name:
+                    out.append(name)
+        except Exception:
+            return []
+        return out
+
+    def required_board_phases(self, part):
+        """Return mandatory production test phases configured for this Part.
+
+        There is deliberately no generic board-test fallback. A manufactured Part
+        receives only the mandatory tests actually assigned to it. This lets PCBAs
+        retain their real VI / Press Fit / BU / EEPROM / SW sequence while fans,
+        cable assemblies and mechanical subassemblies receive no fictitious board
+        tests.
         """
         phases = {
             1: ("Board VI", "BOARD_VI_MIN"),
@@ -954,28 +983,16 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "eeprom": 4, "eepromflashed": 4, "eepromprogramming": 4,
             "softwaretest": 5, "sw": 5, "swtest": 5,
         }
-        found = set()
-        try:
-            for name in PartTestTemplate.objects.filter(part=part).values_list("test_name", flat=True):
-                key = self.norm(name)
-                if key in aliases:
-                    found.add(aliases[key])
-        except Exception:
-            found = set()
-        # All assembled PCBAs follow the core production test flow VI -> BU ->
-        # EEPROM -> SW. Press Fit is hardware-dependent and is included only when
-        # the Part explicitly has a matching Test Template. This prevents a board
-        # such as TR8L (no press-fit connectors) from receiving fictitious Press
-        # Fit time while still ensuring a sparse template set cannot accidentally
-        # drop BU / EEPROM / SW from WIP forecasting.
-        core = {1, 3, 4, 5}
-        if found:
-            found = core | ({2} if 2 in found else set())
-        else:
-            # Legacy assembled boards with no recognizable templates retain the
-            # historical full flow as the conservative fallback.
-            found = set(phases)
+        found=set()
+        for name in self.mandatory_test_templates(part):
+            stage=aliases.get(self.norm(name))
+            if stage:
+                found.add(stage)
         return [(stage, *phases[stage]) for stage in sorted(found)]
+
+    def is_pcba_part(self, part):
+        """Use the established '* Assembly' BOM costing convention to identify PCBAs."""
+        return bool(part and self.has_assembly_cost_line(part))
 
     def remaining_stage_hours(self, stage, qty, part=None):
         q=D(qty)
@@ -1023,6 +1040,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         if need<=0:
             result["forecast_ready"]=iso(date.today()); result["basis"]="Finished / Pass SW stock covers the requirement."; return result
         today=date.today(); candidates=[]
+        is_pcba=self.is_pcba_part(part)
+        assembly_key="PCBA_ASSEMBLY_DAYS" if is_pcba else "GENERIC_ASSEMBLY_DAYS"
+        assembly_label="PCBA assembly" if is_pcba else "Generic / mechanical assembly"
         # Existing WIP with a proven test stage can be forecast directly from its
         # current stage. Unstarted BO outputs are intentionally NOT treated as assembled.
         claimed_staged=D(0)
@@ -1038,7 +1058,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # requiring the configured rework lead time, then restart the complete
         # mandatory board test flow from VI. (-BARE Failed VI is handled separately
         # by the raw-material replacement/fabrication logic.)
-        failed_qty=self.claim_wip(part,-1,state["failed_rework"],need-claimed_staged,pool=pool)
+        failed_qty=self.claim_wip(part,-1,state["failed_rework"],need-claimed_staged,pool=pool) if is_pcba else D(0)
         claimed_failed=D(0)
         if failed_qty>0:
             claimed_failed=failed_qty
@@ -1058,13 +1078,16 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             material_ready,blockers,unresolved=self.board_bom_material_ready(part,remaining_unassembled,builds=builds,pool=pool)
             result["material"]=blockers
             if material_ready and not unresolved:
-                assembled=add_business_days(material_ready,self.setting("PCBA_ASSEMBLY_DAYS", part))
+                assembly_days=self.setting(assembly_key, part)
+                assembled=add_business_days(material_ready,assembly_days)
                 test_hours=self.remaining_stage_hours(0,remaining_unassembled,part)
                 test_segs, finish = self.board_test_segments(assembled, 0, remaining_unassembled, part=part)
                 segs=self.material_segments(blockers)
-                segs.append({"label":"PCBA assembly","start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":self.setting("PCBA_ASSEMBLY_DAYS", part)})
+                segs.append({"label":assembly_label,"start":iso(material_ready),"end":iso(assembled),"kind":"assembly","business_days":assembly_days})
                 segs.extend(test_segs)
-                phase_names='/'.join(label.replace('Board ', '') for _st,label,_key in self.required_board_phases(part)); candidates.append((remaining_unassembled,finish,f"materials inspected {iso(material_ready)} + {self.setting('PCBA_ASSEMBLY_DAYS', part)} business days assembly + {float(test_hours):g}h {phase_names}",segs))
+                phase_names='/'.join(label.replace('Board ', '') for _st,label,_key in self.required_board_phases(part))
+                test_text=f" + {float(test_hours):g}h {phase_names}" if phase_names else " + no mandatory testing"
+                candidates.append((remaining_unassembled,finish,f"materials ready {iso(material_ready)} + {assembly_days} business days {assembly_label.lower()}{test_text}",segs))
             elif unresolved:
                 names=[]
                 for blocker in unresolved:
@@ -1262,6 +1285,22 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                            "critical_display":f"{self.part_label(part)} ready from completed Pass SW outputs" if remaining<=0 else f"Manufacture and test {self.part_label(part)}","unresolved":unresolved,"status":status,"final_assembly_hours":0.0,"board_build_output":True},
                 "settings":{k.lower():self.setting(k) for k in self.SETTINGS},"assumptions":self.planning_assumptions()}
 
+    def generic_build_output_plan(self, build, part, pool=None, priority=None):
+        """Plan a selected non-PCBA manufactured assembly (e.g. *-MECH)."""
+        qty=max(D(0),D(getattr(build,"quantity",0)))
+        state=self.stock_state(part, build_ids=[build.pk])
+        # For generic assemblies, the highest mandatory test stage is the ready state.
+        phases=self.required_board_phases(part)
+        ready_stage=max([st for st,_label,_key in phases], default=0)
+        ready_now=min(qty, D(state["exact"][ready_stage]) if ready_stage else D(state["finished"]))
+        remaining=max(D(0),qty-ready_now)
+        forecast=self.board_forecast(part,remaining,[build],pool=pool,output_builds=[build])
+        unresolved=[] if forecast and forecast.get("forecast_ready") else [self.part_label(part)]
+        ready=day((forecast or {}).get("forecast_ready")); target=day(getattr(build,"target_date",None))
+        status="READY" if remaining<=0 else ("BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST"))
+        row={"bom_item_id":None,"optional":False,"part_id":part.pk,"part_url":self.part_url(part),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"required":float(qty),"available":float(ready_now),"shortage":float(remaining),"board_like":True,"child_builds":[],"forecast":forecast,"build_output":True}
+        return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(qty),"target_date":iso(target)},"priority":priority,"requirements":[row],"optional_requirements":[],"selected_optional_quantities":{},"summary":{"material_ready":None,"forecast_ready":iso(ready),"critical_requirement":self.part_label(part),"critical_display":f"{self.part_label(part)} ready" if remaining<=0 else f"Assemble and test {self.part_label(part)}","unresolved":unresolved,"status":status,"final_assembly_hours":0.0,"generic_build_output":True},"settings":{k.lower():self.setting(k) for k in self.SETTINGS},"assumptions":self.planning_assumptions()}
+
     def coated_build_output_plan(self, build, part, pool=None, priority=None):
         """Plan a BO whose *output* is a conformal-coated PCBA.
 
@@ -1293,6 +1332,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "Time Related Assumptions":[
                 f"Working day: {self.setting('WORK_HOURS_DAY')} hours; weekends are skipped for business-day calculations.",
                 f"PCBA assembly: {self.setting('PCBA_ASSEMBLY_DAYS')} business days after all required material is received and inspected.",
+                f"Generic / mechanical assembly: {self.setting('GENERIC_ASSEMBLY_DAYS')} business days by default; scenario and Part-specific overrides may shorten or extend it.",
                 f"Incoming -BARE VI: {self.setting('BARE_VI_MIN')/60:g} hour per stock item.",
                 f"Incoming -MECH VI: {self.setting('MECH_VI_MIN')/60:g} hour per stock item when applicable.",
                 f"Board test per board: VI {self.setting('BOARD_VI_MIN')/60:g}h; Press Fit {self.setting('PRESS_FIT_MIN')/60:g}h; Bring-Up {self.setting('BU_MIN')/60:g}h; EEPROM {self.setting('EEPROM_MIN')/60:g}h; Software Test {self.setting('SW_MIN')/60:g}h.",
@@ -1303,7 +1343,8 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "Inventory & Material Assumptions":[
                 "Pass SW is the board-ready state and counts as usable finished PCBA stock, including completed Build Outputs.",
                 "Intermediate-status Build Outputs remain WIP; only the still-required Part Test Template stages are forecast.",
-                "Board test stages are Part-specific: a stage such as Press Fit is omitted when that Part has no matching Test Template.",
+                "Testing is Part-specific and mandatory-template-driven: optional/admin templates do not create forecast work, and a Part with no mandatory tests receives no test time.",
+                "Assembled PCBAs retain status-aware WIP and failure handling: failed assembled-board tests use rework then restart all mandatory testing from VI; Failed VI -BARE remains a replacement/remanufacture path.",
                 "BO-created incomplete outputs do not count as ready merely because they exist; staged WIP is forecast from its actual passed test stage.",
                 "Ordinary BOM material uses InvenTree native variant-aware available stock and usable stock counts regardless of storage location.",
                 "Existing child BO BuildLines are authoritative for allocated / consumed / unallocated material state.",
@@ -1335,6 +1376,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         # final-product list followed by generic final assembly.
         if self.has_assembly_cost_line(part):
             return self.board_build_output_plan(build,part,pool=pool,priority=priority)
+        # Mechanical assembly BOs are manufactured outputs, not final products.
+        if self.ipn(part).upper().endswith("-MECH") and self.bom(part):
+            return self.generic_build_output_plan(build,part,pool=pool,priority=priority)
         rows=[]; optional_rows=[]
         build_qty=D(getattr(build,"quantity",0))
         for item in self.bom(part):

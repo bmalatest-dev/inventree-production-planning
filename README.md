@@ -113,3 +113,6 @@ The required board-test sequence is driven by the Part's InvenTree Test Template
 - The core assembled-board sequence is VI -> Bring-Up -> EEPROM -> Software Test. Press Fit is added only for Parts with a Press Fit Test Template.
 - Any assembled-board failed test (VI, Press Fit, BU, EEPROM, SW) forecasts configurable rework (default 2 business days), then restarts the complete mandatory test sequence at VI. It does not repeat PCBA assembly.
 - `-BARE` Failed VI remains unusable raw material and follows replacement/remanufacture logic instead of assembled-board rework.
+
+### Manufactured assembly timing (v3.8.0)
+Production Planning distinguishes PCB assembly from generic/mechanical assembly. PCBAs retain the configured PCBA assembly lead time. Other manufacturable subassemblies use a configurable 20-business-day generic/mechanical default which can be overridden per planning scenario and per Part. Testing is driven only by mandatory Part Test Templates; Parts without mandatory tests receive no test time. Assembled-PCBA failure/rework behavior remains unchanged.
