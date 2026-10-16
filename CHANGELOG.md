@@ -1,4 +1,9 @@
-# v3.9.10
+## v3.9.11
+- Distinguishes full overdue PO coverage from true unscheduled supply: overdue full coverage is **LATE / REQUIRES ATTENTION** with **ETA REQUIRED**, while partial/no coverage remains blocked.
+- Multi-build Build Forecasts now include a per-BO collapsible **Ready Requirements (N)** section so later-priority BOs have the same requirement visibility as the first BO.
+- No planning quantity, recursion, shared-pool, assembly, or test-timing behavior changed.
+
+# v3.9.11
 
 - Production-safe packaging release of the validated v3.9.9 planning logic.
 - Reuses the last known-good collected frontend asset name (`production_planning_v398.js`) because the frontend code is byte-for-byte identical to v3.9.8.

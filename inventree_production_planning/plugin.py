@@ -116,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v398.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v3911.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -817,7 +817,15 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             for row,take in used:
                 lid=row.get("line_id"); pool["po"][lid]=max(D(0),D(pool["po"].get(lid,0))-take)
                 pool["claims"].append({"type":"po","part_id":part.pk,"label":self.part_label(part),"quantity":float(take),"po":row.get("ref"),"date":iso(row.get("effective"))})
-        return {"open":sum((x["qty"] for x in rows),D(0)),"earliest":next((x["effective"] for x in credible),None),"full":full,"refs":refs,
+        open_total=sum((x["qty"] for x in rows),D(0))
+        stale_total=sum((D(x["qty"]) for x in rows if x["effective"] and x["effective"] < date.today()),D(0))
+        undated_total=sum((D(x["qty"]) for x in rows if not x["effective"]),D(0))
+        attention_full=bool(remaining>0 and open_total>=D(need))
+        attention_reason=("overdue" if stale_total>0 else "eta_required" if undated_total>0 else None) if attention_full else None
+        oldest_stale=min((x["effective"] for x in rows if x["effective"] and x["effective"] < date.today()),default=None)
+        return {"open":open_total,"earliest":next((x["effective"] for x in credible),None),"full":full,"refs":refs,
+                "attention_full":attention_full,"attention_reason":attention_reason,"oldest_stale":oldest_stale,
+                "stale_qty":stale_total,"undated_qty":undated_total,
                 "lines":[{"po":x["ref"],"qty":float(x["qty"]),"po_target_date":iso(x["po_target"]),"line_target_date":iso(x["line_target"]),"effective_date":iso(x["effective"]),"stale":bool(x["effective"] and x["effective"] < date.today())} for x in rows]}
 
     def is_bare_part(self, part):
@@ -913,7 +921,12 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 "incoming_qty":float(shortage),"received_date":iso(incoming_received),
                 "inspection_hours":float(total_inspection_hours),"inspection":inspection or ((self.inspection_hours(part,pending)[1]) if pending > 0 else ""),"ready_date":iso(ready),
                 "open_po_qty":float(po.get("open",0)),"po_references":po.get("refs",[]),"po_lines":po.get("lines",[]),
-                "failed_vi_qty":float(failed_vi),"blocked_qty":float(blocked)}
+                "failed_vi_qty":float(failed_vi),"blocked_qty":float(blocked),
+                "supply_attention":bool(shortage>0 and po.get("attention_full")),
+                "supply_attention_reason":po.get("attention_reason"),
+                "oldest_overdue_date":iso(po.get("oldest_stale")),
+                "overdue_days":((date.today()-po.get("oldest_stale")).days if po.get("oldest_stale") else None),
+                "po_full_coverage":bool(shortage>0 and D(po.get("open",0))>=shortage)}
         if replacement:
             result.update({
                 "constraint":"failed_vi_replacement" if failed_vi > 0 else "bare_fabrication_fallback",
@@ -1474,7 +1487,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 pending=D(m.get("pending_qty",0))
                 basis=(f"{self.part_label(part)} requires {float(pending):g} unit(s) of mandatory inspection/testing; ready {ready}" if pending>0 and ready else
                        f"{self.part_label(part)} material ready {ready}" if ready else
-                       f"{self.part_label(part)} has no dated full material coverage")
+                       (f"{self.part_label(part)} has full PO coverage but the supplier ETA is overdue; updated ETA required" if m.get("supply_attention_reason")=="overdue" else
+                        f"{self.part_label(part)} has full PO coverage but requires an updated ETA" if m.get("supply_attention") else
+                        f"{self.part_label(part)} has no dated full material coverage"))
                 forecast={"ready_now":float(available),"need_after_ready":float(shortage),
                           "forecast_ready":ready,"basis":basis,"material":[m],
                           "pipeline":{"pending_inspection":float(pending),"pass_sw":0,"failed_rework":0}}
@@ -1590,6 +1605,24 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             ]
         }
 
+    def unresolved_supply_attention(self, rows):
+        """Return unresolved requirements which are covered by open PO supply but need an updated ETA."""
+        attention=[]
+        blocked=[]
+        for row in rows:
+            if D(row.get("shortage",0))<=0:
+                continue
+            forecast=row.get("forecast") or {}
+            if forecast.get("forecast_ready"):
+                continue
+            materials=forecast.get("material") or []
+            mats=[m for m in materials if D(m.get("shortage",0))>0]
+            if mats and all(bool(m.get("supply_attention")) for m in mats):
+                attention.append(row)
+            else:
+                blocked.append(row)
+        return attention,blocked
+
     def plan(self, build_id, optional_quantities=None, pool=None, priority=None):
         build=Build.objects.select_related("part").get(pk=build_id); part=getattr(build,"part",None)
         if not part: raise ValueError("Build Order has no output part")
@@ -1643,10 +1676,16 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         target=day(getattr(build,"target_date",None))
         if unresolved:
             critical=None
-            critical_display=f"Unresolved — {len(unresolved)} requirement{'s' if len(unresolved)!=1 else ''} have unscheduled material blockers"
+            attention_rows,blocked_rows=self.unresolved_supply_attention(rows)
+            if attention_rows and not blocked_rows:
+                critical_display=f"Requires Attention — {len(attention_rows)} requirement{'s' if len(attention_rows)!=1 else ''} have full PO coverage but need updated ETA"
+                status="REQUIRES ATTENTION / UNDATED"
+            else:
+                critical_display=f"Unresolved — {len(unresolved)} requirement{'s' if len(unresolved)!=1 else ''} have unscheduled material blockers"
+                status="BLOCKED / UNSCHEDULED"
         else:
             critical_display=critical or "All requirements ready"
-        status="BLOCKED / UNSCHEDULED" if unresolved else ("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
+            status=("ON TRACK" if target and ready<=target else "LATE" if target and ready>target else "FORECAST")
         return {"plugin_version":self.VERSION,"build":{"id":build.pk,"reference":self.build_ref(build),"ipn":self.ipn(part),"name":str(getattr(part,"name","") or ""),"quantity":float(D(getattr(build,"quantity",0))),"target_date":iso(target)},
                 "priority":priority,"requirements":rows,"optional_requirements":optional_rows,"selected_optional_quantities":{str(k):float(v) for k,v in optional_quantities.items()},
                 "summary":{"material_ready":None if unresolved else iso(material),"forecast_ready":iso(ready),"critical_requirement":critical,"critical_display":critical_display,"unresolved":unresolved,"status":status,"final_assembly_hours":float(final_hours)},

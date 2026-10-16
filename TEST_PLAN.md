@@ -1,4 +1,10 @@
-# v3.9.10 focused regression
+## v3.9.11 focused acceptance
+1. BO-0177 / S-20415-PV: full open PO coverage with past ETA must show LATE / REQUIRES ATTENTION and ETA REQUIRED, not generic UNSCHEDULED.
+2. BO-0177 / S-18408-PV: partial PO coverage must remain BLOCKED / UNSCHEDULED.
+3. Multi-build: expand each Build Forecast and confirm each BO has its own Ready Requirements (N) section.
+4. Recheck BO-0133 and BO-0136 for unchanged test/rework behavior.
+
+# v3.9.11 focused regression
 
 BO-0133 / TR8R:
 - Need 22, Ready 21, WIP 1.
@@ -8,7 +14,7 @@ BO-0133 / TR8R:
 - Must not add PCBA assembly.
 - Ready and WIP quantities remain mutually exclusive.
 
-# v3.9.10 focused regression
+# v3.9.11 focused regression
 
 ## BO-0133 — TR8R
 - Effective mandatory workflow must be ordered: Visual Inspection → Bring Up → EEPROM → Software Test.
