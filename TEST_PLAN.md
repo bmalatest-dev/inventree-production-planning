@@ -1,3 +1,10 @@
+# v3.9.7 focused regression
+
+1. BO-0133 / TR8R: expect 20 Ready + 2 WIP. One VI-stage board must schedule Bring Up + EEPROM + Software Test only. One failed-BU board must schedule Rework (2 business days) + VI + Bring Up + EEPROM + Software Test. No PCBA assembly for either existing assembled board.
+2. Confirm TEMPLATE-labelled duplicates do not appear when an equivalent non-TEMPLATE mandatory test exists.
+3. BO-0136 / FR2TS: retain inherited ordered workflow and 39-board TX Waveform + Software Test remaining calculation (87.75 h when those are the only remaining tests), plus failed-board rework/full retest.
+4. BO-0177: retain generic/mechanical finished-stock and mandatory-inspection behavior.
+
 # Production Planning v3.4.1 Test Plan
 
 ## Primary regression: BO-0182 / FR2TSC

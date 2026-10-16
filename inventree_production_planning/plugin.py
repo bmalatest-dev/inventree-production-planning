@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.6 production planning with semantic TEMPLATE de-duplication for variant-family test workflows."
+    DESCRIPTION = "V3.9.7 production planning with mandatory-first TEMPLATE de-duplication and restored failed-board retest workflows."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -116,7 +116,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             "title": _("Production Plan"),
             "description": _("Material readiness and forecast completion"),
             "icon": "ti:calendar-time",
-            "source": self.plugin_static_file("production_planning_v396.js:renderPanel"),
+            "source": self.plugin_static_file("production_planning_v397.js:renderPanel"),
             "context": {"build_id": pk, "data_url": f"/plugin/{self.SLUG}/build/{pk}/"},
         }]
 
@@ -1074,19 +1074,21 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         return any(str(v or "").strip().lower().startswith("template") for v in values)
 
     def effective_test_templates(self, part):
-        """Return the merged mandatory test workflow applicable to *part*.
+        """Return the effective ordered mandatory-test workflow for *part*.
 
-        InvenTree variant families can split a workflow across the generic parent
-        and a concrete child Part. Build the enabled workflow from root -> child,
-        matching templates by stable test key. A child template replaces the
-        matching parent template while retaining that test's workflow position;
-        child-only tests are appended in the child's configured order. Finally,
-        optional templates are removed from the production workflow.
+        Variant families can split production tests across generic/template parents
+        and concrete child Parts. Only *mandatory* enabled templates participate in
+        the workflow. This filtering deliberately happens BEFORE semantic de-duplication:
+        an optional concrete/template duplicate must never suppress a mandatory test.
 
-        This supports all observed layouts:
-        - no child templates -> inherit the parent workflow (e.g. FR2TS)
-        - partial child templates -> merge child + parent (e.g. TR8R)
-        - complete child workflow -> child templates override matching parent keys
+        Tests are then merged root -> child by semantic identity. A leading
+        ``TEMPLATE`` marker is ignored for identity purposes. When duplicate mandatory
+        definitions exist, prefer a non-TEMPLATE definition; otherwise prefer the
+        more-specific child definition while retaining the original workflow position.
+
+        This preserves inherited mandatory tests, removes genuine TEMPLATE duplicates,
+        and allows partial child workflows such as TR8R (child VI + inherited BU /
+        EEPROM / Software Test).
         """
         chain=[]; seen=set(); current=part
         while current is not None and getattr(current, "pk", None) not in seen:
@@ -1101,18 +1103,26 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 for template in PartTestTemplate.objects.filter(part=family_part).order_by("pk"):
                     if getattr(template, "enabled", True) is False:
                         continue
-                    key=self.workflow_test_identity(template)
-                    # Treat explicit TEMPLATE-prefixed tests as placeholders for the
-                    # equivalent concrete production test. If both exist anywhere
-                    # in the variant chain, keep the non-TEMPLATE definition. For
-                    # otherwise equivalent definitions, the more-specific child
-                    # still replaces its ancestor as before.
-                    identity=key or f"template:{getattr(template, 'pk', id(template))}"
+
+                    # Optional/admin tests (including optional Rework) are not part
+                    # of the normal production qualification sequence. Filter them
+                    # before de-duplication so they cannot hide a mandatory ancestor.
+                    required=getattr(template, "required", None)
+                    if required is None:
+                        required=getattr(template, "mandatory", None)
+                    if required is False:
+                        continue
+
+                    identity=self.workflow_test_identity(template) or f"template:{getattr(template, 'pk', id(template))}"
                     if identity in positions:
                         pos=positions[identity]
                         existing=ordered[pos]
                         existing_placeholder=self.is_template_placeholder_test(existing)
                         incoming_placeholder=self.is_template_placeholder_test(template)
+
+                        # A real production test always wins over a TEMPLATE-labelled
+                        # duplicate. If both have the same placeholder status, the
+                        # more-specific child definition wins.
                         if existing_placeholder and not incoming_placeholder:
                             ordered[pos]=template
                         elif not existing_placeholder and incoming_placeholder:
@@ -1125,15 +1135,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
         except Exception:
             return []
 
-        mandatory=[]
-        for template in ordered:
-            required=getattr(template, "required", None)
-            if required is None:
-                required=getattr(template, "mandatory", None)
-            if required is False:
-                continue
-            mandatory.append(template)
-        return mandatory
+        return ordered
 
     def mandatory_test_templates(self, part):
         """Return names of the effective mandatory templates for compatibility."""

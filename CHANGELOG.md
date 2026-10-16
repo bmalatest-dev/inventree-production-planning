@@ -1,3 +1,13 @@
+## v3.9.7
+
+- Filter optional Test Templates before semantic TEMPLATE de-duplication so an optional duplicate can never suppress a mandatory inherited production test.
+- Merge mandatory tests across the full variant/template chain and retain one effective test per normalized identity, preferring the non-`TEMPLATE` definition when a genuine duplicate exists.
+- Restore TR8R-style partial workflows: direct Visual Inspection plus inherited Bring Up, EEPROM, and Software Test remain mandatory.
+- A failed mandatory test on an assembled PCB remains failed WIP: forecast configured rework, then restart the complete effective mandatory test sequence from VI without repeating PCBA assembly.
+- Existing assembled WIP with a passed intermediate stage schedules only its remaining mandatory tests; PCBA assembly is reserved for genuinely unassembled shortage quantity.
+- Preserve FR2TS inherited multi-stage workflow and TX Waveform timing.
+- No database migration required.
+
 ## v3.9.6
 
 - De-duplicate inherited test templates semantically when an ancestor test is explicitly prefixed `TEMPLATE` and an equivalent concrete test exists in the Part/variant workflow.
