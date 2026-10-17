@@ -1,4 +1,4 @@
-## v3.9.12 unknown mandatory test regression
+## v3.9.13 unknown mandatory test regression
 
 - BO-0177 / 1427N2-PV: 20 OK stock items with required RandomTest and no results must schedule 20h RandomTest at the 1h/item default.
 - Adjust Planning Times must show Other / unknown mandatory test = 1h/item and expose RandomTest under 1427N2-PV for a part/test-specific override.

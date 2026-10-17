@@ -61,7 +61,7 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
     NAME = "ProductionPlanning"
     SLUG = "production-planning"
     TITLE = "Production Planning"
-    DESCRIPTION = "V3.9.12 production planning with configurable fallback timing for unknown mandatory tests."
+    DESCRIPTION = "V3.9.13 production planning with reliable fallback timing for unknown mandatory tests."
     VERSION = PLUGIN_VERSION
     AUTHOR = "Per Vices Corporation"
     LICENSE = "MIT"
@@ -141,14 +141,20 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
                 return max(0, int(float(glob[key])))
         except Exception:
             pass
+        # Per-template unknown-test keys are intentionally dynamic and therefore
+        # are not persistent plugin settings. If there is no request-scoped
+        # part/test override above, always fall back to UNKNOWN_TEST_MIN. Do this
+        # before get_setting(key): SettingsMixin may return 0/None for an unknown
+        # key without raising, which previously collapsed a 20-item unknown test
+        # into an incorrect near-zero duration.
+        if str(key).startswith("UNKNOWN_TEST_") and str(key).endswith("_MIN"):
+            try:
+                return max(0, int(self.get_setting("UNKNOWN_TEST_MIN") or 60))
+            except Exception:
+                return 60
         try:
             return max(0, int(self.get_setting(key) or 0))
         except Exception:
-            if str(key).startswith("UNKNOWN_TEST_") and str(key).endswith("_MIN"):
-                try:
-                    return max(0, int(self.get_setting("UNKNOWN_TEST_MIN") or 60))
-                except Exception:
-                    return 60
             return 0
 
     def timing_overrides_from_request(self, request):
@@ -1493,7 +1499,9 @@ class ProductionPlanningPlugin(SettingsMixin, UrlsMixin, UserInterfaceMixin, Inv
             if shortage>0:
                 ready=m.get("ready_date")
                 pending=D(m.get("pending_qty",0))
-                basis=(f"{self.part_label(part)} requires {float(pending):g} unit(s) of mandatory inspection/testing; ready {ready}" if pending>0 and ready else
+                pending_hours, pending_label = self.inspection_hours(part, pending) if pending > 0 else (D(0), "")
+                test_detail = (f"{pending_label}: {float(pending):g} item(s), {float(pending_hours):g}h total" if pending_label else f"{float(pending_hours):g}h mandatory inspection/testing")
+                basis=(f"{self.part_label(part)} requires {test_detail}; ready {ready}" if pending>0 and ready else
                        f"{self.part_label(part)} material ready {ready}" if ready else
                        (f"{self.part_label(part)} has full PO coverage but the supplier ETA is overdue; updated ETA required" if m.get("supply_attention_reason")=="overdue" else
                         f"{self.part_label(part)} has full PO coverage but requires an updated ETA" if m.get("supply_attention") else

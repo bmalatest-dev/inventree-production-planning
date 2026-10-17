@@ -1,3 +1,10 @@
+## v3.9.13
+
+- Fix dynamic unknown mandatory-test timing so per-template keys reliably fall back to `UNKNOWN_TEST_MIN` (60 minutes/item by default).
+- Unknown mandatory tests now use the same 8-hour business-day scheduling path as all other hourly production work.
+- Readiness-path text now names the test(s) and shows total calculated hours for pending mandatory testing.
+- Backend-only release: reuses the already-served v3.9.12 frontend asset; no new static file deployment is required.
+
 ## v3.9.12
 
 - Unknown mandatory Test Templates now default to 60 minutes per item instead of zero time.
