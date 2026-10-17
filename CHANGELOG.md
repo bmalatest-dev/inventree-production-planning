@@ -1,3 +1,11 @@
+## v3.9.14
+
+- Deployment-only release; no production-planning logic changes from v3.9.13.
+- Replaces version-specific frontend filenames with the stable `production_planning.js` asset.
+- Backend panel registration now uses InvenTree `plugin_static_file("production_planning.js:renderPanel")`.
+- Package distributes only the current canonical frontend bundle, avoiding accumulated historical JS assets.
+- Intended acceptance path is normal plugin install/upgrade plus plugin activation/re-activation through the InvenTree UI; no server shell, manual copy, or `collectstatic` should be required.
+
 ## v3.9.13
 
 - Fix dynamic unknown mandatory-test timing so per-template keys reliably fall back to `UNKNOWN_TEST_MIN` (60 minutes/item by default).

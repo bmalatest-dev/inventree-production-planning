@@ -1,3 +1,13 @@
+## v3.9.14 production deployment regression
+
+1. Install/upgrade v3.9.14 using the same InvenTree UI/plugin mechanism intended for production. Do not copy files or run `collectstatic`.
+2. If upgrading an already-active replica plugin, deactivate and reactivate Production Planning through the InvenTree UI so InvenTree performs its documented plugin-static collection step.
+3. Open BO-0177 and confirm the Production Plan panel loads from `production_planning.js` with no module-load error.
+4. Confirm the panel reports plugin version 3.9.14 in API/context where visible and retains v3.9.13 planning behavior.
+5. Regression-check 1427N2-PV: RandomTest remains an unknown mandatory test at 1 h/item (20 items = 20 h) and does not forecast ready the next calendar day.
+6. Regression-check BO-0133 and BO-0136 before production deployment.
+7. Acceptance criterion: no server shell, `cp`, `collectstatic`, filesystem edits, or migration required.
+
 ## v3.9.13 unknown mandatory test regression
 
 - BO-0177 / 1427N2-PV: 20 OK stock items with required RandomTest and no results must schedule 20h RandomTest at the 1h/item default.

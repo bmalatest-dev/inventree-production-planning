@@ -133,3 +133,8 @@ Legacy template/variant families may expose both a placeholder test such as `TEM
 ### v3.9.13 canonical workflow ordering and Ready/WIP accounting
 
 Variant inheritance can place child and parent test templates in a database order which is not the actual production sequence. v3.9.13 orders recognized mandatory production tests by workflow semantics after inheritance and TEMPLATE de-duplication. Production Requirements also reports Ready and WIP as mutually exclusive quantities; failed assembled boards count as WIP/rework and follow rework plus the full mandatory retest sequence without repeating PCBA assembly.
+
+
+### v3.9.14 deployment packaging
+
+v3.9.14 keeps v3.9.13 planning behavior and switches frontend registration to a stable `production_planning.js` asset via InvenTree `plugin_static_file`. This is intended to support production installation and activation through InvenTree without server-side file copying.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inventree-production-planning"
-version = "3.9.13"
+version = "3.9.14"
 description = "Recursive multi-build production planning with explicit source-board timing and consolidated leaf-material shortages for InvenTree Build Orders."
 readme = "README.md"
 requires-python = ">=3.11"
